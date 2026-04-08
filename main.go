@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"fmt"
-	"io"
 	mathrand "math/rand"
 	"net"
 	"net/url"
