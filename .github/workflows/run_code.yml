@@ -1,0 +1,37 @@
+name: Go Runner
+
+on:
+  workflow_dispatch: # Để bạn tự bấm nút Run
+  push:
+    branches: [ main ] # Tự chạy mỗi khi bạn push code lên main
+
+jobs:
+  execute-go:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Sử dụng Token Classic bạn đã lưu trong Secrets
+          token: ${{ secrets.MY_GIT_TOKEN }}
+
+      - name: Setup Go environment
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.21' # Bạn có thể đổi version tùy ý
+          check-latest: true
+
+      - name: Install dependencies
+        run: |
+          if [ -f go.mod ]; then
+            go mod download
+          fi
+
+      - name: Run Go Code
+        env:
+          # Truyền token vào biến môi trường nếu code Go của bạn cần gọi API GitHub
+          GH_TOKEN: ${{ secrets.MY_GIT_TOKEN }}
+        run: |
+          # Giả sử file chính của bạn là main.go
+          go run main.go
