@@ -366,10 +366,21 @@ func main() {
 	fmt.Printf("[*] Target : %s\n", TARGET_URL)
 	fmt.Printf("[*] Workers: %d | Timeout: %v\n\n", WORKERS, REQ_TIMEOUT)
 
-	fmt.Print("Dùng proxy? (y/n): ")
-	reader := bufio.NewReader(os.Stdin)
-	ans, _ := reader.ReadString('\n')
-	useProxy := strings.TrimSpace(strings.ToLower(ans)) == "y"
+	// Tự động chọn mode từ environment variable hoặc hỏi user
+	useProxy := false
+	if mode := os.Getenv("ATTACK_MODE"); mode != "" {
+		useProxy = strings.ToLower(mode) == "proxy"
+		if useProxy {
+			fmt.Println("[*] Mode: PROXY (from env)")
+		} else {
+			fmt.Println("[*] Mode: DIRECT (from env)")
+		}
+	} else {
+		fmt.Print("Dùng proxy? (y/n): ")
+		reader := bufio.NewReader(os.Stdin)
+		ans, _ := reader.ReadString('\n')
+		useProxy = strings.TrimSpace(strings.ToLower(ans)) == "y"
+	}
 
 	if useProxy {
 		fmt.Printf("[*] Fetch raw từ %d nguồn song song...\n", len(PROXY_SOURCES))

@@ -26,12 +26,15 @@ jobs:
         run: |
           if [ -f go.mod ]; then
             go mod download
+            go mod tidy
           fi
 
       - name: Run Go Code
         env:
           # Truyền token vào biến môi trường nếu code Go của bạn cần gọi API GitHub
           GH_TOKEN: ${{ secrets.MY_GIT_TOKEN }}
+          # Chọn mode: "direct" hoặc "proxy"
+          ATTACK_MODE: proxy
         run: |
           # Giả sử file chính của bạn là main.go
           go run main.go
