@@ -34,7 +34,7 @@ jobs:
           # Truyền token vào biến môi trường nếu code Go của bạn cần gọi API GitHub
           GH_TOKEN: ${{ secrets.MY_GIT_TOKEN }}
           # Chọn mode: "direct" hoặc "proxy"
-          ATTACK_MODE: proxy
+          ATTACK_MODE: direct
         run: |
           # Giả sử file chính của bạn là main.go
-          go run main.go
+          timeout 300 go run main.go || true

