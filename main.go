@@ -95,13 +95,14 @@ var PROXY_SOURCES = []struct{ URL, Scheme string }{
 // ── Fetch raw list ────────────────────────────────────────────────────────────
 func fetchText(u string) string {
 	client := cycletls.Init()
-	defer client.Close()
 
 	response, err := client.Do(u, cycletls.Options{
 		Ja3:       "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-17513,29-23-24,0",
 		UserAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
 		Timeout:   10,
 	}, "GET")
+
+	client.Close()
 
 	if err != nil {
 		return ""
@@ -148,7 +149,6 @@ func fetchRaw() []Proxy {
 // ── Verify proxy với CycleTLS ────────────────────────────────────────────────
 func verifyProxy(p Proxy) bool {
 	client := cycletls.Init()
-	defer client.Close()
 
 	_, err := client.Do("https://dkshop.dev/controllers/dkshop", cycletls.Options{
 		Ja3:       "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-17513,29-23-24,0",
@@ -156,6 +156,8 @@ func verifyProxy(p Proxy) bool {
 		Proxy:     p.URL(),
 		Timeout:   int(PROXY_TEST_TO.Seconds()),
 	}, "GET")
+
+	client.Close()
 
 	return err == nil
 }
