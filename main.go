@@ -45,7 +45,7 @@ var (
 	domains    = []string{"gmail.com","yahoo.com","outlook.com","hotmail.com","protonmail.com","icloud.com","mail.com","tutanota.com","gmx.com","zoho.com"}
 	userAgents = []string{
 		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36",
-		"Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:148.0) Gecko/20100101 Firefox/148.0"
+		"Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:148.0) Gecko/20100101 Firefox/148.0",
 	}
 )
 
