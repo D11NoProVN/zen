@@ -3,8 +3,9 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"io"
 	mathrand "math/rand"
-	"net/http"
+	"net"
 	"net/url"
 	"os"
 	"runtime"
