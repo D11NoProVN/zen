@@ -19,6 +19,71 @@ if (!fs.existsSync(DOWNLOAD_DIR)) {
 app.use(express.json());
 app.use(express.static(__dirname));
 
+function stripUrlFromKeyword(kw) {
+    return kw
+        .trim()
+        .replace(/^https?:\/\//i, '')
+        .replace(/^\/\//, '')
+        .replace(/\/+$/, '')
+        .toLowerCase();
+}
+
+function parseStripUrlLine(line) {
+    const trimmed = line.trim();
+    if (!trimmed) return null;
+
+    const noProtocol = trimmed
+        .replace(/^https?:\/\//i, '')
+        .replace(/^\/\//, '');
+
+    const firstSlash = noProtocol.indexOf('/');
+    const firstColon = noProtocol.indexOf(':');
+
+    // host/path:user:pass
+    if (firstSlash !== -1 && (firstColon === -1 || firstSlash < firstColon)) {
+        const pathColon = noProtocol.indexOf(':', firstSlash + 1);
+        if (pathColon !== -1) {
+            const userPass = noProtocol.slice(pathColon + 1);
+            if (!userPass.includes(':')) return null;
+
+            return {
+                urlPartLower: noProtocol.slice(0, pathColon).replace(/\/+$/, ''),
+                credentialsLower: userPass
+            };
+        }
+    }
+
+    const parts = noProtocol.split(':');
+    if (parts.length < 3) return null;
+
+    let credentialsStart = parts.length - 2;
+
+    // host:port:user:pass
+    if (parts.length >= 4 && /^\d+$/.test(parts[1])) {
+        credentialsStart = 2;
+    }
+
+    const userPassParts = parts.slice(credentialsStart);
+    if (userPassParts.length < 2) return null;
+
+    const credentialsLower = userPassParts.join(':');
+    const urlPartLower = parts.slice(0, credentialsStart).join(':').replace(/\/+$/, '');
+
+    return {
+        urlPartLower,
+        credentialsLower
+    };
+}
+
+function stripUrlFromLine(line) {
+    const parsed = parseStripUrlLine(line);
+    if (parsed) {
+        return parsed.credentialsLower;
+    }
+
+    return line.replace(/^https?:\/\//i, '');
+}
+
 // API: Get list of downloaded files
 app.get('/api/files', (req, res) => {
     try {
@@ -242,6 +307,10 @@ app.post('/api/scan-fast', async (req, res) => {
     const chunkSize = Math.ceil(fileSize / NUM_WORKERS);
 
     // Split file into chunks for parallel processing
+    const normalizedKeywords = stripUrl
+        ? keywords.map(kw => stripUrlFromKeyword(kw)).filter(Boolean)
+        : keywords;
+
     const workers = [];
     const results = {
         total: 0,
@@ -252,7 +321,7 @@ app.post('/api/scan-fast', async (req, res) => {
         domainCount: new Map()
     };
 
-    keywords.forEach(kw => {
+    normalizedKeywords.forEach(kw => {
         results.perKeyword[kw] = [];
         results.perKeywordCounts[kw] = 0;
     });
@@ -269,7 +338,7 @@ app.post('/api/scan-fast', async (req, res) => {
                 filepath,
                 start,
                 end,
-                keywords,
+                keywords: normalizedKeywords,
                 excludeKeywords,
                 stripUrl,
                 dedup: false // Dedup globally after merge
@@ -311,18 +380,24 @@ app.post('/api/scan-fast', async (req, res) => {
                             seen.add(line);
                             return true;
                         });
-                        results.filtered = results.lines.length;
 
                         // Dedup per-keyword
-                        for (const kw of keywords) {
+                        for (const kw of normalizedKeywords) {
                             const kwSeen = new Set();
-                            results.perKeyword[kw] = results.perKeyword[kw].filter(line => {
+                            results.perKeyword[kw] = (results.perKeyword[kw] || []).filter(line => {
                                 if (kwSeen.has(line)) return false;
                                 kwSeen.add(line);
                                 return true;
                             });
                             results.perKeywordCounts[kw] = results.perKeyword[kw].length;
                         }
+                    }
+
+                    results.filtered = results.lines.length; // recompute after merge/dedup to avoid worker progress overcounting
+
+                    // Build per-keyword counts from merged data to avoid overcounting across workers
+                    for (const [kw, lines] of Object.entries(results.perKeyword)) {
+                        results.perKeywordCounts[kw] = lines.length;
                     }
 
                     // Send final result
@@ -409,6 +484,9 @@ app.get('/api/scan-fast', async (req, res) => {
     res.setHeader('Connection', 'keep-alive');
 
     const keywordList = JSON.parse(keywords || '[]');
+    const normalizedKeywordList = stripUrl === 'true'
+        ? keywordList.map(kw => stripUrlFromKeyword(kw)).filter(Boolean)
+        : keywordList;
     const fileSize = fs.statSync(filepath).size;
     const chunkSize = Math.ceil(fileSize / NUM_WORKERS);
 
@@ -423,7 +501,7 @@ app.get('/api/scan-fast', async (req, res) => {
         domainCount: new Map()
     };
 
-    keywordList.forEach(kw => {
+    normalizedKeywordList.forEach(kw => {
         results.perKeyword[kw] = [];
         results.perKeywordCounts[kw] = 0;
     });
@@ -440,7 +518,7 @@ app.get('/api/scan-fast', async (req, res) => {
                 filepath,
                 start,
                 end,
-                keywords: keywordList,
+                keywords: normalizedKeywordList,
                 excludeKeywords: excludeKeywords || '',
                 stripUrl: stripUrl === 'true',
                 dedup: false
@@ -454,6 +532,10 @@ app.get('/api/scan-fast', async (req, res) => {
                 results.lines.push(...msg.lines);
 
                 for (const [kw, lines] of Object.entries(msg.perKeyword)) {
+                    if (!results.perKeyword[kw]) {
+                        results.perKeyword[kw] = [];
+                        results.perKeywordCounts[kw] = 0;
+                    }
                     results.perKeyword[kw].push(...lines);
                     results.perKeywordCounts[kw] += lines.length;
                 }
@@ -478,17 +560,22 @@ app.get('/api/scan-fast', async (req, res) => {
                             seen.add(line);
                             return true;
                         });
-                        results.filtered = results.lines.length;
 
-                        for (const kw of keywordList) {
+                        for (const kw of normalizedKeywordList) {
                             const kwSeen = new Set();
-                            results.perKeyword[kw] = results.perKeyword[kw].filter(line => {
+                            results.perKeyword[kw] = (results.perKeyword[kw] || []).filter(line => {
                                 if (kwSeen.has(line)) return false;
                                 kwSeen.add(line);
                                 return true;
                             });
                             results.perKeywordCounts[kw] = results.perKeyword[kw].length;
                         }
+                    }
+
+                    results.filtered = results.lines.length; // recompute after merge/dedup to avoid worker progress overcounting
+
+                    for (const [kw, lines] of Object.entries(results.perKeyword)) {
+                        results.perKeywordCounts[kw] = lines.length;
                     }
 
                     const topDomains = Array.from(results.domainCount.entries())

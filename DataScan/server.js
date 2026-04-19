@@ -125,8 +125,16 @@ app.post('/api/scan-stream', async (req, res) => {
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
 
-    const keywordList = keywords.map(k => stripUrl ? stripUrlFromKeyword(k) : k.toLowerCase());
-    const excludeList = excludeKeywords ? excludeKeywords.split(',').map(k => k.trim().toLowerCase()) : [];
+    const keywordList = keywords
+        .map(k => stripUrl ? stripUrlFromKeyword(k) : k.toLowerCase())
+        .filter(Boolean);
+
+    const excludeList = excludeKeywords
+        ? excludeKeywords
+            .split(',')
+            .map(k => stripUrl ? stripUrlFromKeyword(k) : k.trim().toLowerCase())
+            .filter(Boolean)
+        : [];
     const seen = dedup ? new Set() : null;
     const domainCount = new Map();
     const perKeywordCounts = {};
@@ -147,35 +155,57 @@ app.post('/api/scan-stream', async (req, res) => {
         totalLines++;
 
         const lineLower = line.toLowerCase();
-        const lineToCheck = stripUrl ? stripUrlFromLine(lineLower) : lineLower;
 
-        // Check exclude
-        if (excludeList.some(ex => lineToCheck.includes(ex))) return;
+        let matchedKeyword = null;
 
-        // Check keywords
-        let matched = false;
-        for (const kw of keywordList) {
-            if (lineToCheck.includes(kw)) {
-                matched = true;
+        if (stripUrl) {
+            const parsed = parseStripUrlLine(lineLower);
+            if (!parsed) return;
 
-                // Dedup check
-                if (dedup) {
-                    if (seen.has(line)) continue;
-                    seen.add(line);
+            const { urlPartLower, credentialsLower } = parsed;
+
+            // Check exclude against URL and credentials in strip mode
+            if (excludeList.some(ex => urlPartLower.includes(ex) || credentialsLower.includes(ex))) return;
+
+            for (const kw of keywordList) {
+                if (urlPartLower.includes(kw) || credentialsLower.includes(kw)) {
+                    matchedKeyword = kw;
+                    break;
                 }
+            }
+        } else {
+            const lineToCheck = lineLower;
 
-                filteredLines++;
-                buffer.push(line);
-                perKeywordBuffer[kw].push(line);
-                perKeywordCounts[kw]++;
+            // Check exclude
+            if (excludeList.some(ex => lineToCheck.includes(ex))) return;
 
-                // Extract domain for analytics
-                const domain = extractDomain(line);
-                if (domain) {
-                    domainCount.set(domain, (domainCount.get(domain) || 0) + 1);
+            for (const kw of keywordList) {
+                if (lineToCheck.includes(kw)) {
+                    matchedKeyword = kw;
+                    break;
                 }
+            }
+        }
 
-                break;
+        if (matchedKeyword) {
+            // Dedup check
+            if (dedup) {
+                const dedupKey = stripUrl ? stripUrlFromLine(line) : line;
+                if (seen.has(dedupKey)) return;
+                seen.add(dedupKey);
+            }
+
+            const outputLine = stripUrl ? stripUrlFromLine(line) : line;
+
+            filteredLines++;
+            buffer.push(outputLine);
+            perKeywordBuffer[matchedKeyword].push(outputLine);
+            perKeywordCounts[matchedKeyword]++;
+
+            // Extract domain for analytics
+            const domain = extractDomain(line);
+            if (domain) {
+                domainCount.set(domain, (domainCount.get(domain) || 0) + 1);
             }
         }
 
@@ -233,11 +263,68 @@ app.post('/api/scan-stream', async (req, res) => {
     }
 
     function stripUrlFromKeyword(kw) {
-        return kw.replace(/^https?:\/\//i, '').replace(/\/+$/, '').toLowerCase();
+        return kw
+            .trim()
+            .replace(/^https?:\/\//i, '')
+            .replace(/^\/\//, '')
+            .replace(/\/+$/, '')
+            .toLowerCase();
+    }
+
+    function parseStripUrlLine(line) {
+        const trimmed = line.trim();
+        if (!trimmed) return null;
+
+        const noProtocol = trimmed
+            .replace(/^https?:\/\//i, '')
+            .replace(/^\/\//, '');
+
+        const firstSlash = noProtocol.indexOf('/');
+        const firstColon = noProtocol.indexOf(':');
+
+        // host/path:user:pass
+        if (firstSlash !== -1 && (firstColon === -1 || firstSlash < firstColon)) {
+            const pathColon = noProtocol.indexOf(':', firstSlash + 1);
+            if (pathColon !== -1) {
+                const userPass = noProtocol.slice(pathColon + 1);
+                if (!userPass.includes(':')) return null;
+
+                return {
+                    urlPartLower: noProtocol.slice(0, pathColon).replace(/\/+$/, ''),
+                    credentialsLower: userPass
+                };
+            }
+        }
+
+        const parts = noProtocol.split(':');
+        if (parts.length < 3) return null;
+
+        let credentialsStart = parts.length - 2;
+
+        // host:port:user:pass
+        if (parts.length >= 4 && /^\d+$/.test(parts[1])) {
+            credentialsStart = 2;
+        }
+
+        const userPassParts = parts.slice(credentialsStart);
+        if (userPassParts.length < 2) return null;
+
+        const credentialsLower = userPassParts.join(':');
+        const urlPartLower = parts.slice(0, credentialsStart).join(':').replace(/\/+$/, '');
+
+        return {
+            urlPartLower,
+            credentialsLower
+        };
     }
 
     function stripUrlFromLine(line) {
-        return line.replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+        const parsed = parseStripUrlLine(line);
+        if (parsed) {
+            return parsed.credentialsLower;
+        }
+
+        return line.replace(/^https?:\/\//i, '');
     }
 
     function extractDomain(line) {
