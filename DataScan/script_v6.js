@@ -31,6 +31,7 @@ document.addEventListener('DOMContentLoaded', () => {
         progressBar:    $('progressBar'),
         savedBadge:     $('savedBadge'),
         toastContainer: $('toastContainer'),
+        loadFromDownloadsBtn: $('loadFromDownloadsBtn'),
     };
 
     // ─── State ───
@@ -82,6 +83,148 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     loadKeywords();
+
+    // ─── Load from Downloads ───
+    el.loadFromDownloadsBtn.addEventListener('click', async () => {
+        try {
+            const res = await fetch('/api/files');
+            const data = await res.json();
+
+            if (!data.success) {
+                notify('Lỗi tải danh sách: ' + data.error, 'error');
+                return;
+            }
+
+            if (data.files.length === 0) {
+                notify('Chưa có file nào trong Downloads!', 'error');
+                return;
+            }
+
+            // Show selection modal
+            showDownloadsModal(data.files);
+        } catch (err) {
+            notify('Lỗi kết nối server: ' + err.message, 'error');
+        }
+    });
+
+    function showDownloadsModal(files) {
+        // Create modal
+        const modal = document.createElement('div');
+        modal.style.cssText = `
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.85);
+            backdrop-filter: blur(8px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 9999;
+            animation: fadeIn 0.2s;
+        `;
+
+        const content = document.createElement('div');
+        content.style.cssText = `
+            background: var(--bg-elevated);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-xl);
+            padding: 1.5rem;
+            max-width: 600px;
+            width: 90%;
+            max-height: 70vh;
+            overflow-y: auto;
+        `;
+
+        content.innerHTML = `
+            <h3 style="margin: 0 0 1rem 0; color: var(--text-primary); font-size: 1.2rem;">
+                <i class="fas fa-folder-open"></i> Chọn file từ Downloads
+            </h3>
+            <div id="modalFileList" style="display: flex; flex-direction: column; gap: 0.5rem; margin-bottom: 1rem;">
+                ${files.map((f, i) => `
+                    <label style="display: flex; align-items: center; gap: 0.75rem; padding: 0.75rem; background: rgba(0,0,0,0.3); border: 1px solid var(--border); border-radius: var(--radius-md); cursor: pointer; transition: all 0.2s;" class="file-select-item">
+                        <input type="checkbox" value="${i}" style="width: 18px; height: 18px; cursor: pointer;">
+                        <div style="flex: 1;">
+                            <div style="color: var(--text-primary); font-size: 0.85rem; font-weight: 600; margin-bottom: 0.25rem;">${escapeHtml(f.name)}</div>
+                            <div style="color: var(--text-dim); font-size: 0.7rem; font-family: var(--font-mono);">
+                                ${formatBytes(f.size)} • ${new Date(f.modified).toLocaleString('vi-VN')}
+                            </div>
+                        </div>
+                    </label>
+                `).join('')}
+            </div>
+            <div style="display: flex; gap: 0.5rem;">
+                <button id="modalLoadBtn" class="btn btn-primary" style="flex: 1;">
+                    <i class="fas fa-check"></i> Tải file đã chọn
+                </button>
+                <button id="modalCancelBtn" class="btn btn-ghost">
+                    <i class="fas fa-xmark"></i> Hủy
+                </button>
+            </div>
+        `;
+
+        modal.appendChild(content);
+        document.body.appendChild(modal);
+
+        // Hover effect
+        content.querySelectorAll('.file-select-item').forEach(item => {
+            item.addEventListener('mouseenter', () => {
+                item.style.borderColor = 'var(--accent)';
+                item.style.background = 'rgba(108, 92, 231, 0.1)';
+            });
+            item.addEventListener('mouseleave', () => {
+                item.style.borderColor = 'var(--border)';
+                item.style.background = 'rgba(0,0,0,0.3)';
+            });
+        });
+
+        // Load selected files
+        document.getElementById('modalLoadBtn').addEventListener('click', async () => {
+            const selected = Array.from(content.querySelectorAll('input[type="checkbox"]:checked'))
+                .map(cb => files[parseInt(cb.value)]);
+
+            if (selected.length === 0) {
+                notify('Chưa chọn file nào!', 'error');
+                return;
+            }
+
+            modal.remove();
+            await loadFilesFromServer(selected);
+        });
+
+        document.getElementById('modalCancelBtn').addEventListener('click', () => {
+            modal.remove();
+        });
+
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) modal.remove();
+        });
+    }
+
+    async function loadFilesFromServer(fileInfos) {
+        const loadedFiles = [];
+
+        for (const info of fileInfos) {
+            try {
+                const res = await fetch(`/api/files/${encodeURIComponent(info.name)}/content`);
+                const data = await res.json();
+
+                if (data.success) {
+                    // Create File object from content
+                    const blob = new Blob([data.content], { type: 'text/plain' });
+                    const file = new File([blob], info.name, { type: 'text/plain' });
+                    loadedFiles.push(file);
+                } else {
+                    notify(`Lỗi tải ${info.name}: ${data.error}`, 'error');
+                }
+            } catch (err) {
+                notify(`Lỗi tải ${info.name}: ${err.message}`, 'error');
+            }
+        }
+
+        if (loadedFiles.length > 0) {
+            addFiles(loadedFiles);
+            notify(`Đã tải ${loadedFiles.length} file từ Downloads!`, 'success');
+        }
+    }
 
     // ─── Parse Keywords ───
     function parseKeywords() {

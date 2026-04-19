@@ -51,9 +51,11 @@ jobs:
           echo "Pass: 123456"
           echo "=========================================="
 
-      - name: Start DataScan static app
+      - name: Start DataScan app
         run: |
-          npx serve@14.2.4 -s DataScan -l 8080 > /tmp/datascan.log 2>&1 &
+          cd DataScan
+          npm install > /tmp/datascan-install.log 2>&1
+          npm start > /tmp/datascan.log 2>&1 &
 
           for i in $(seq 1 30); do
             if curl -fsSI http://localhost:8080 > /dev/null; then
@@ -63,6 +65,9 @@ jobs:
           done
 
           echo "DataScan failed to become ready"
+          echo "===== npm install log ====="
+          cat /tmp/datascan-install.log
+          echo "===== npm start log ====="
           cat /tmp/datascan.log
           exit 1
 

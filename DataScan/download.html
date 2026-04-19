@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ZenScan - Download Manager</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <style>
+        .download-container {
+            max-width: 1200px;
+            margin: 2rem auto;
+            padding: 0 1.5rem;
+        }
+        .download-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 2rem;
+        }
+        .download-form {
+            background: var(--bg-card);
+            backdrop-filter: blur(24px);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-xl);
+            padding: 1.5rem;
+            margin-bottom: 2rem;
+        }
+        .form-row {
+            display: flex;
+            gap: 0.75rem;
+            align-items: flex-end;
+        }
+        .form-group {
+            flex: 1;
+        }
+        .form-label {
+            display: block;
+            font-size: 0.68rem;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            color: var(--text-secondary);
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+        }
+        .form-input {
+            width: 100%;
+            background: rgba(0,0,0,0.35);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            padding: 0.7rem 1rem;
+            color: var(--text-primary);
+            font-size: 0.8rem;
+            font-family: var(--font-mono);
+            transition: border-color 0.3s, box-shadow 0.3s;
+        }
+        .form-input:focus {
+            outline: none;
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px var(--accent-glow);
+        }
+        .files-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: 1rem;
+        }
+        .file-card {
+            background: var(--bg-card);
+            backdrop-filter: blur(24px);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            padding: 1.25rem;
+            transition: all 0.3s var(--ease-out);
+            position: relative;
+        }
+        .file-card:hover {
+            border-color: var(--border-hover);
+            transform: translateY(-2px);
+        }
+        .file-icon {
+            width: 48px;
+            height: 48px;
+            border-radius: var(--radius-md);
+            background: var(--accent-gradient);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.2rem;
+            color: white;
+            margin-bottom: 1rem;
+        }
+        .file-name {
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 0.5rem;
+            word-break: break-all;
+        }
+        .file-meta {
+            font-size: 0.7rem;
+            color: var(--text-dim);
+            margin-bottom: 0.25rem;
+            font-family: var(--font-mono);
+        }
+        .file-actions {
+            display: flex;
+            gap: 0.5rem;
+            margin-top: 1rem;
+        }
+        .file-actions .btn {
+            flex: 1;
+            padding: 0.5rem;
+            font-size: 0.7rem;
+        }
+        .empty-state {
+            text-align: center;
+            padding: 4rem 2rem;
+            color: var(--text-dim);
+        }
+        .empty-state i {
+            font-size: 4rem;
+            margin-bottom: 1rem;
+            opacity: 0.3;
+        }
+        .loading-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.8);
+            backdrop-filter: blur(8px);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 9999;
+        }
+        .loading-overlay.active {
+            display: flex;
+        }
+        .loading-spinner {
+            text-align: center;
+            color: var(--text-primary);
+        }
+        .spinner {
+            width: 50px;
+            height: 50px;
+            border: 4px solid rgba(255,255,255,0.1);
+            border-top-color: var(--accent);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 1rem;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="background-effects">
+        <div class="bg-orb bg-orb-1"></div>
+        <div class="bg-orb bg-orb-2"></div>
+        <div class="bg-orb bg-orb-3"></div>
+    </div>
+    <div class="bg-grid"></div>
+
+    <div class="toast-container" id="toastContainer"></div>
+
+    <div class="loading-overlay" id="loadingOverlay">
+        <div class="loading-spinner">
+            <div class="spinner"></div>
+            <div>Đang tải file...</div>
+        </div>
+    </div>
+
+    <div class="download-container">
+        <div class="download-header">
+            <div>
+                <h1 class="text-gradient" style="font-size: 2rem; margin-bottom: 0.5rem;">Download Manager</h1>
+                <p style="color: var(--text-dim); font-size: 0.85rem;">Tải và quản lý data files</p>
+            </div>
+            <a href="/" class="btn btn-ghost">
+                <i class="fas fa-arrow-left"></i> Về trang Scan
+            </a>
+        </div>
+
+        <div class="download-form glass">
+            <div class="form-row">
+                <div class="form-group">
+                    <label class="form-label">
+                        <i class="fas fa-link"></i> URL FILE
+                    </label>
+                    <input
+                        type="text"
+                        class="form-input"
+                        id="urlInput"
+                        placeholder="https://example.com/data.txt"
+                        spellcheck="false"
+                    >
+                </div>
+                <button class="btn btn-primary" id="downloadBtn" style="height: 42px;">
+                    <i class="fas fa-download"></i> TẢI XUỐNG
+                </button>
+                <button class="btn btn-ghost" id="refreshBtn" style="height: 42px;">
+                    <i class="fas fa-rotate"></i>
+                </button>
+            </div>
+        </div>
+
+        <div id="filesContainer">
+            <div class="empty-state">
+                <i class="fas fa-folder-open"></i>
+                <p>Chưa có file nào. Nhập URL để tải file.</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = '';
+        const $ = id => document.getElementById(id);
+
+        // Toast notification
+        function notify(msg, type = 'info') {
+            const icons = { success: 'fa-check-circle', error: 'fa-exclamation-circle', info: 'fa-info-circle' };
+            const toast = document.createElement('div');
+            toast.className = `toast ${type}`;
+            toast.innerHTML = `<i class="fas ${icons[type] || icons.info}"></i> ${escapeHtml(msg)}`;
+            $('toastContainer').appendChild(toast);
+
+            setTimeout(() => {
+                toast.classList.add('exit');
+                setTimeout(() => toast.remove(), 300);
+            }, 3500);
+        }
+
+        function escapeHtml(str) {
+            const div = document.createElement('div');
+            div.textContent = str;
+            return div.innerHTML;
+        }
+
+        function formatBytes(bytes) {
+            if (bytes < 1024) return bytes + ' B';
+            if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+            if (bytes < 1073741824) return (bytes / 1048576).toFixed(2) + ' MB';
+            return (bytes / 1073741824).toFixed(2) + ' GB';
+        }
+
+        function formatDate(date) {
+            return new Date(date).toLocaleString('vi-VN');
+        }
+
+        // Load files
+        async function loadFiles() {
+            try {
+                const res = await fetch(`${API_BASE}/api/files`);
+                const data = await res.json();
+
+                if (data.success) {
+                    renderFiles(data.files);
+                } else {
+                    notify('Lỗi tải danh sách file: ' + data.error, 'error');
+                }
+            } catch (err) {
+                notify('Lỗi kết nối server: ' + err.message, 'error');
+            }
+        }
+
+        // Render files
+        function renderFiles(files) {
+            const container = $('filesContainer');
+
+            if (files.length === 0) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <i class="fas fa-folder-open"></i>
+                        <p>Chưa có file nào. Nhập URL để tải file.</p>
+                    </div>
+                `;
+                return;
+            }
+
+            container.innerHTML = `<div class="files-grid">${files.map(file => `
+                <div class="file-card glass">
+                    <div class="file-icon">
+                        <i class="fas fa-file-lines"></i>
+                    </div>
+                    <div class="file-name">${escapeHtml(file.name)}</div>
+                    <div class="file-meta">
+                        <i class="fas fa-weight-hanging"></i> ${formatBytes(file.size)}
+                    </div>
+                    <div class="file-meta">
+                        <i class="fas fa-clock"></i> ${formatDate(file.modified)}
+                    </div>
+                    <div class="file-actions">
+                        <button class="btn btn-ghost" onclick="deleteFile('${escapeHtml(file.name)}')">
+                            <i class="fas fa-trash"></i> Xóa
+                        </button>
+                    </div>
+                </div>
+            `).join('')}</div>`;
+        }
+
+        // Download file
+        async function downloadFile() {
+            const url = $('urlInput').value.trim();
+
+            if (!url) {
+                notify('Vui lòng nhập URL!', 'error');
+                return;
+            }
+
+            $('loadingOverlay').classList.add('active');
+
+            try {
+                const res = await fetch(`${API_BASE}/api/download`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url })
+                });
+
+                const data = await res.json();
+
+                if (data.success) {
+                    notify(`Đã tải thành công: ${data.file.name}`, 'success');
+                    $('urlInput').value = '';
+                    loadFiles();
+                } else {
+                    notify('Lỗi tải file: ' + data.error, 'error');
+                }
+            } catch (err) {
+                notify('Lỗi: ' + err.message, 'error');
+            } finally {
+                $('loadingOverlay').classList.remove('active');
+            }
+        }
+
+        // Delete file
+        async function deleteFile(filename) {
+            if (!confirm(`Xóa file "${filename}"?`)) return;
+
+            try {
+                const res = await fetch(`${API_BASE}/api/files/${encodeURIComponent(filename)}`, {
+                    method: 'DELETE'
+                });
+
+                const data = await res.json();
+
+                if (data.success) {
+                    notify('Đã xóa file!', 'success');
+                    loadFiles();
+                } else {
+                    notify('Lỗi xóa file: ' + data.error, 'error');
+                }
+            } catch (err) {
+                notify('Lỗi: ' + err.message, 'error');
+            }
+        }
+
+        // Event listeners
+        $('downloadBtn').addEventListener('click', downloadFile);
+        $('refreshBtn').addEventListener('click', loadFiles);
+        $('urlInput').addEventListener('keypress', e => {
+            if (e.key === 'Enter') downloadFile();
+        });
+
+        // Initial load
+        loadFiles();
+    </script>
+</body>
+</html>
