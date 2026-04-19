@@ -1,7 +1,7 @@
 name: SSH into Runner via Pinggy
 
 on:
-  workflow_dispatch: # Sửa lại chỗ này cho chuẩn
+  workflow_dispatch:
 
 jobs:
   debug-ssh:
@@ -15,4 +15,5 @@ jobs:
         run: |
           sudo systemctl start ssh
           echo "runner:123456" | sudo chpasswd
-          ssh -p 443 -R0:localhost:22 -o StrictHostKeyChecking=no -o ServerAliveInterval=30 a.pinggy.io
+          # Đã thêm tcp@ vào trước a.pinggy.io
+          ssh -p 443 -R0:localhost:22 -o StrictHostKeyChecking=no -o ServerAliveInterval=30 tcp@a.pinggy.io
