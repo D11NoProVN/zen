@@ -150,35 +150,6 @@ function createFinalDownloadEvent({ finalized, elapsed, speed }) {
     return createDownloadCompleteEvent({ extraction: finalized.extraction });
 }
 
-function startServer() {
-    return app.listen(PORT, () => {
-        console.log(`ZenScan Server running at http://localhost:${PORT}`);
-        console.log(`Using ${NUM_WORKERS} CPU cores for parallel processing`);
-        console.log(`Downloads folder: ${DOWNLOAD_DIR}`);
-    });
-}
-
-module.exports = {
-    app,
-    ArchiveExtractionError,
-    createDownloadSuccessPayload,
-    createDownloadCompleteEvent,
-    buildDownloadFilename,
-    finalizeDownloadedFile,
-    getDownloadErrorStatus,
-    getDownloadErrorMessage,
-    getDownloadStartFilename,
-    getDownloadTargetPath,
-    createFinalDownloadPayload,
-    createFinalDownloadEvent,
-    startServer
-};
-
-if (require.main === module) {
-    startServer();
-}
-
-
 const PORT = 8080;
 const DOWNLOAD_DIR = path.join(__dirname, 'downloads');
 const NUM_WORKERS = os.cpus().length; // Dùng hết CPU cores
