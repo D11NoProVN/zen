@@ -1,7 +1,10 @@
-name: SSH via Ngrok + Web via Cloudflared
+name: Zen
+on: [push]
 
-on:
-  workflow_dispatch:
+# Thêm đoạn này để tự động dừng các bản cũ
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   debug-ssh:

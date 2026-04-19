@@ -389,6 +389,170 @@ app.post('/api/scan-fast', async (req, res) => {
     });
 });
 
+// API: GET version for EventSource (SSE)
+app.get('/api/scan-fast', async (req, res) => {
+    const { filename, keywords, excludeKeywords, stripUrl, dedup } = req.query;
+
+    if (!filename) {
+        return res.status(400).json({ success: false, error: 'Filename is required' });
+    }
+
+    const filepath = path.join(DOWNLOAD_DIR, filename);
+
+    if (!fs.existsSync(filepath)) {
+        return res.status(404).json({ success: false, error: 'File not found' });
+    }
+
+    // SSE headers
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+
+    const keywordList = JSON.parse(keywords || '[]');
+    const fileSize = fs.statSync(filepath).size;
+    const chunkSize = Math.ceil(fileSize / NUM_WORKERS);
+
+    // Split file into chunks for parallel processing
+    const workers = [];
+    const results = {
+        total: 0,
+        filtered: 0,
+        lines: [],
+        perKeyword: {},
+        perKeywordCounts: {},
+        domainCount: new Map()
+    };
+
+    keywordList.forEach(kw => {
+        results.perKeyword[kw] = [];
+        results.perKeywordCounts[kw] = 0;
+    });
+
+    let completedWorkers = 0;
+    let lastUpdate = Date.now();
+
+    for (let i = 0; i < NUM_WORKERS; i++) {
+        const start = i * chunkSize;
+        const end = Math.min((i + 1) * chunkSize, fileSize);
+
+        const worker = new Worker(path.join(__dirname, 'scan-worker.js'), {
+            workerData: {
+                filepath,
+                start,
+                end,
+                keywords: keywordList,
+                excludeKeywords: excludeKeywords || '',
+                stripUrl: stripUrl === 'true',
+                dedup: false
+            }
+        });
+
+        worker.on('message', (msg) => {
+            if (msg.type === 'progress') {
+                results.total += msg.total;
+                results.filtered += msg.filtered;
+                results.lines.push(...msg.lines);
+
+                for (const [kw, lines] of Object.entries(msg.perKeyword)) {
+                    results.perKeyword[kw].push(...lines);
+                    results.perKeywordCounts[kw] += lines.length;
+                }
+
+                for (const [domain, count] of Object.entries(msg.domainCount)) {
+                    results.domainCount.set(domain, (results.domainCount.get(domain) || 0) + count);
+                }
+
+                const now = Date.now();
+                if (now - lastUpdate > 500) {
+                    sendUpdate();
+                    lastUpdate = now;
+                }
+            } else if (msg.type === 'complete') {
+                completedWorkers++;
+
+                if (completedWorkers === NUM_WORKERS) {
+                    if (dedup === 'true') {
+                        const seen = new Set();
+                        results.lines = results.lines.filter(line => {
+                            if (seen.has(line)) return false;
+                            seen.add(line);
+                            return true;
+                        });
+                        results.filtered = results.lines.length;
+
+                        for (const kw of keywordList) {
+                            const kwSeen = new Set();
+                            results.perKeyword[kw] = results.perKeyword[kw].filter(line => {
+                                if (kwSeen.has(line)) return false;
+                                kwSeen.add(line);
+                                return true;
+                            });
+                            results.perKeywordCounts[kw] = results.perKeyword[kw].length;
+                        }
+                    }
+
+                    const topDomains = Array.from(results.domainCount.entries())
+                        .sort((a, b) => b[1] - a[1])
+                        .slice(0, 10);
+
+                    const perKeyword = {};
+                    for (const [kw, lines] of Object.entries(results.perKeyword)) {
+                        perKeyword[kw] = lines;
+                    }
+
+                    res.write(`data: ${JSON.stringify({
+                        type: 'complete',
+                        total: results.total,
+                        filtered: results.filtered,
+                        results: results.lines.join('\n'),
+                        perKeyword,
+                        perKeywordCounts: results.perKeywordCounts,
+                        topDomains,
+                        preview: results.lines.slice(-20)
+                    })}\n\n`);
+
+                    res.end();
+                }
+            }
+        });
+
+        worker.on('error', (err) => {
+            res.write(`data: ${JSON.stringify({ type: 'error', message: err.message })}\n\n`);
+            res.end();
+        });
+
+        workers.push(worker);
+    }
+
+    function sendUpdate() {
+        const topDomains = Array.from(results.domainCount.entries())
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 10);
+
+        const perKeyword = {};
+        for (const [kw, lines] of Object.entries(results.perKeyword)) {
+            if (lines.length > 0) {
+                perKeyword[kw] = lines.slice(-100);
+            }
+        }
+
+        res.write(`data: ${JSON.stringify({
+            type: 'progress',
+            total: results.total,
+            filtered: results.filtered,
+            results: results.lines.slice(-1000).join('\n'),
+            perKeyword,
+            perKeywordCounts: results.perKeywordCounts,
+            topDomains,
+            preview: results.lines.slice(-20)
+        })}\n\n`);
+    }
+
+    req.on('close', () => {
+        workers.forEach(w => w.terminate());
+    });
+});
+
 app.listen(PORT, () => {
     console.log(`ZenScan Server running at http://localhost:${PORT}`);
     console.log(`Using ${NUM_WORKERS} CPU cores for parallel processing`);
