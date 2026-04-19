@@ -9,6 +9,12 @@ const {
     createDeltaTracker,
     buildDeltaPayload
 } = require('./scan-fast-stream-delta');
+const {
+    createAggregationState,
+    applyWorkerProgress,
+    finalizeAggregatedTotals,
+    toTopDomains
+} = require('./scan-fast-worker-aggregation');
 const app = express();
 
 const PORT = 8080;
@@ -316,19 +322,7 @@ app.post('/api/scan-fast', async (req, res) => {
         : keywords;
 
     const workers = [];
-    const results = {
-        total: 0,
-        filtered: 0,
-        lines: [],
-        perKeyword: {},
-        perKeywordCounts: {},
-        domainCount: new Map()
-    };
-
-    normalizedKeywords.forEach(kw => {
-        results.perKeyword[kw] = [];
-        results.perKeywordCounts[kw] = 0;
-    });
+    const results = createAggregationState(normalizedKeywords);
 
     let completedWorkers = 0;
     let lastUpdate = Date.now();
@@ -352,20 +346,7 @@ app.post('/api/scan-fast', async (req, res) => {
 
         worker.on('message', (msg) => {
             if (msg.type === 'progress') {
-                results.total += msg.total;
-                results.filtered += msg.filtered;
-                results.lines.push(...msg.lines);
-
-                // Merge per-keyword results
-                for (const [kw, lines] of Object.entries(msg.perKeyword)) {
-                    results.perKeyword[kw].push(...lines);
-                    results.perKeywordCounts[kw] += lines.length;
-                }
-
-                // Merge domain counts
-                for (const [domain, count] of Object.entries(msg.domainCount)) {
-                    results.domainCount.set(domain, (results.domainCount.get(domain) || 0) + count);
-                }
+                applyWorkerProgress(results, i, msg);
 
                 // Send update every 500ms
                 const now = Date.now();
@@ -394,21 +375,24 @@ app.post('/api/scan-fast', async (req, res) => {
                                 kwSeen.add(line);
                                 return true;
                             });
-                            results.perKeywordCounts[kw] = results.perKeyword[kw].length;
                         }
                     }
 
-                    results.filtered = results.lines.length; // recompute after merge/dedup to avoid worker progress overcounting
+                    finalizeAggregatedTotals(results);
 
-                    // Build per-keyword counts from merged data to avoid overcounting across workers
-                    for (const [kw, lines] of Object.entries(results.perKeyword)) {
-                        results.perKeywordCounts[kw] = lines.length;
+                    if (dedup) {
+                        const rebuiltDomainCount = new Map();
+                        for (const line of results.lines) {
+                            const domain = extractDomain(line);
+                            if (domain) {
+                                rebuiltDomainCount.set(domain, (rebuiltDomainCount.get(domain) || 0) + 1);
+                            }
+                        }
+                        results.domainCount = rebuiltDomainCount;
                     }
 
                     // Send final unsent delta only
-                    const topDomains = Array.from(results.domainCount.entries())
-                        .sort((a, b) => b[1] - a[1])
-                        .slice(0, 10);
+                    const topDomains = toTopDomains(results, 10);
 
                     const delta = buildDeltaPayload(results, deltaTracker);
 
@@ -437,9 +421,7 @@ app.post('/api/scan-fast', async (req, res) => {
     }
 
     function sendUpdate() {
-        const topDomains = Array.from(results.domainCount.entries())
-            .sort((a, b) => b[1] - a[1])
-            .slice(0, 10);
+        const topDomains = toTopDomains(results, 10);
 
         const delta = buildDeltaPayload(results, deltaTracker);
 
@@ -489,19 +471,7 @@ app.get('/api/scan-fast', async (req, res) => {
 
     // Split file into chunks for parallel processing
     const workers = [];
-    const results = {
-        total: 0,
-        filtered: 0,
-        lines: [],
-        perKeyword: {},
-        perKeywordCounts: {},
-        domainCount: new Map()
-    };
-
-    normalizedKeywordList.forEach(kw => {
-        results.perKeyword[kw] = [];
-        results.perKeywordCounts[kw] = 0;
-    });
+    const results = createAggregationState(normalizedKeywordList);
 
     let completedWorkers = 0;
     let lastUpdate = Date.now();
@@ -525,22 +495,7 @@ app.get('/api/scan-fast', async (req, res) => {
 
         worker.on('message', (msg) => {
             if (msg.type === 'progress') {
-                results.total += msg.total;
-                results.filtered += msg.filtered;
-                results.lines.push(...msg.lines);
-
-                for (const [kw, lines] of Object.entries(msg.perKeyword)) {
-                    if (!results.perKeyword[kw]) {
-                        results.perKeyword[kw] = [];
-                        results.perKeywordCounts[kw] = 0;
-                    }
-                    results.perKeyword[kw].push(...lines);
-                    results.perKeywordCounts[kw] += lines.length;
-                }
-
-                for (const [domain, count] of Object.entries(msg.domainCount)) {
-                    results.domainCount.set(domain, (results.domainCount.get(domain) || 0) + count);
-                }
+                applyWorkerProgress(results, i, msg);
 
                 const now = Date.now();
                 if (now - lastUpdate > 500) {
@@ -566,19 +521,23 @@ app.get('/api/scan-fast', async (req, res) => {
                                 kwSeen.add(line);
                                 return true;
                             });
-                            results.perKeywordCounts[kw] = results.perKeyword[kw].length;
                         }
                     }
 
-                    results.filtered = results.lines.length; // recompute after merge/dedup to avoid worker progress overcounting
+                    finalizeAggregatedTotals(results);
 
-                    for (const [kw, lines] of Object.entries(results.perKeyword)) {
-                        results.perKeywordCounts[kw] = lines.length;
+                    if (dedup === 'true') {
+                        const rebuiltDomainCount = new Map();
+                        for (const line of results.lines) {
+                            const domain = extractDomain(line);
+                            if (domain) {
+                                rebuiltDomainCount.set(domain, (rebuiltDomainCount.get(domain) || 0) + 1);
+                            }
+                        }
+                        results.domainCount = rebuiltDomainCount;
                     }
 
-                    const topDomains = Array.from(results.domainCount.entries())
-                        .sort((a, b) => b[1] - a[1])
-                        .slice(0, 10);
+                    const topDomains = toTopDomains(results, 10);
 
                     const delta = buildDeltaPayload(results, deltaTracker);
 
@@ -607,9 +566,7 @@ app.get('/api/scan-fast', async (req, res) => {
     }
 
     function sendUpdate() {
-        const topDomains = Array.from(results.domainCount.entries())
-            .sort((a, b) => b[1] - a[1])
-            .slice(0, 10);
+        const topDomains = toTopDomains(results, 10);
 
         const delta = buildDeltaPayload(results, deltaTracker);
 
