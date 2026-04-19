@@ -1,0 +1,23 @@
+name: SSH into Runner
+
+on:
+  workflow_dispatch: # Kích hoạt thủ công
+
+jobs:
+  debug-ssh:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Cài đặt một số tool cơ bản (Tuỳ chọn)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y htop neofetch net-tools tmux
+
+      - name: Mở cổng SSH với tmate
+        uses: mxschmitt/action-tmate@v3
+        with:
+          # Thêm dòng này để tự động tiếp tục workflow nếu bạn ngắt kết nối SSH
+          limit-access-to-actor: false
