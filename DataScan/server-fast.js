@@ -71,12 +71,17 @@ function createDownloadCompleteEvent({ file, extraction }) {
 
 function buildDownloadFilename(url) {
     const pathname = new URL(url).pathname;
-    const basename = path.basename(pathname);
-    if (basename && basename !== '/' && basename !== '.') {
-        return basename;
+    let basename = path.basename(pathname);
+    if (!basename || basename === '/' || basename === '.') {
+        return `download_${Date.now()}.txt`;
     }
 
-    return `download_${Date.now()}.txt`;
+    const lower = basename.toLowerCase();
+    if (!lower.endsWith('.txt') && !lower.endsWith('.zip') && !lower.endsWith('.rar')) {
+        basename += '.txt';
+    }
+
+    return basename;
 }
 
 async function finalizeDownloadedFile({ filepath, filename }) {
