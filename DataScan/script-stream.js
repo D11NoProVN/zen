@@ -37,6 +37,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // ─── State ───
     let state = {
         selectedFiles: [],
+        selectedTotalSize: 0,
         eventSource: null,
         totalCount: 0,
         foundCount: 0,
@@ -121,6 +122,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         const totalSize = state.selectedFiles.reduce((sum, file) => sum + (file.size || 0), 0);
+        state.selectedTotalSize = totalSize;
         const label = state.selectedFiles.length === 1
             ? state.selectedFiles[0].name
             : `${state.selectedFiles.length} files đã chọn`;
@@ -380,6 +382,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 el.totalLines.innerText = state.totalCount.toLocaleString();
                 el.filteredLines.innerText = state.foundCount.toLocaleString();
+
+                const estimatedPercent = state.selectedTotalSize > 0
+                    ? Math.min(99, Math.max(1, (data.total / Math.max(state.selectedTotalSize / 32, 1)) * 100))
+                    : (data.total > 0 ? 1 : 0);
+                if (data.type === 'progress') {
+                    el.progressBar.style.width = `${estimatedPercent.toFixed(2)}%`;
+                }
 
                 // Store blobs
                 if (data.results && data.results.length > 0) {

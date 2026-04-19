@@ -45,7 +45,43 @@ function buildDeltaPayload(results, tracker) {
     };
 }
 
+function shouldEmitProgress({
+    totalLines,
+    lastEmittedLines,
+    now,
+    lastEmittedAt,
+    minLineDelta = 10000,
+    minIntervalMs = 250,
+    force = false
+} = {}) {
+    const currentTotal = typeof totalLines === 'number' && Number.isFinite(totalLines) ? totalLines : 0;
+    const previousTotal = typeof lastEmittedLines === 'number' && Number.isFinite(lastEmittedLines) ? lastEmittedLines : 0;
+    const currentTime = typeof now === 'number' && Number.isFinite(now) ? now : 0;
+    const previousTime = typeof lastEmittedAt === 'number' && Number.isFinite(lastEmittedAt) ? lastEmittedAt : 0;
+    const safeMinLineDelta = typeof minLineDelta === 'number' && Number.isFinite(minLineDelta) ? minLineDelta : 0;
+    const safeMinIntervalMs = typeof minIntervalMs === 'number' && Number.isFinite(minIntervalMs) ? minIntervalMs : 0;
+
+    const linesDelta = currentTotal >= previousTotal
+        ? currentTotal - previousTotal
+        : currentTotal;
+
+    if (linesDelta <= 0) {
+        return false;
+    }
+
+    if (force) {
+        return true;
+    }
+
+    const lineTrigger = safeMinLineDelta > 0 && linesDelta >= safeMinLineDelta;
+    const elapsedMs = currentTime >= previousTime ? currentTime - previousTime : 0;
+    const timeTrigger = safeMinIntervalMs > 0 && elapsedMs >= safeMinIntervalMs;
+
+    return lineTrigger || timeTrigger;
+}
+
 module.exports = {
     createDeltaTracker,
-    buildDeltaPayload
+    buildDeltaPayload,
+    shouldEmitProgress
 };

@@ -3,6 +3,7 @@ const { parentPort, workerData } = require('worker_threads');
 const fs = require('fs');
 const { createReadStream } = require('fs');
 const { createInterface } = require('readline');
+const { shouldEmitProgress } = require('./scan-fast-stream-delta');
 
 const {
     filepath,
@@ -52,11 +53,50 @@ const rl = createInterface({
 
 let isFirstLine = true;
 const shouldSkipFirstLine = shouldSkipFirstLineAtOffset(filepath, start);
+let lastProgressLineCount = 0;
+let lastProgressAt = Date.now();
+
+function emitProgress(force = false) {
+    const now = Date.now();
+    if (!shouldEmitProgress({
+        totalLines,
+        lastEmittedLines: lastProgressLineCount,
+        now,
+        lastEmittedAt: lastProgressAt,
+        force,
+        minLineDelta: 10000,
+        minIntervalMs: 250
+    })) {
+        return;
+    }
+
+    parentPort.postMessage({
+        type: 'progress',
+        total: totalLines,
+        filtered: filteredLines,
+        lines: results.splice(0),
+        lineDomains: lineDomains.splice(0),
+        perKeyword: cloneAndClear(perKeyword),
+        domainCount: { ...domainCount }
+    });
+
+    lastProgressLineCount = totalLines;
+    lastProgressAt = now;
+}
+
+function emitFinalProgress() {
+    emitProgress(true);
+}
+
+function maybeEmitProgress() {
+    emitProgress(false);
+}
 
 rl.on('line', (line) => {
     // Skip partial first line only when the chunk starts mid-line
     if (isFirstLine && shouldSkipFirstLine) {
         isFirstLine = false;
+        maybeEmitProgress();
         return;
     }
     isFirstLine = false;
@@ -70,7 +110,10 @@ rl.on('line', (line) => {
 
     if (stripUrl) {
         const parsed = parseStripUrlLine(lineLower);
-        if (!parsed) return;
+        if (!parsed) {
+            maybeEmitProgress();
+            return;
+        }
 
         const { urlPartLower, credentialsLower } = parsed;
 
@@ -84,7 +127,10 @@ rl.on('line', (line) => {
                     break;
                 }
             }
-            if (excluded) return;
+            if (excluded) {
+                maybeEmitProgress();
+                return;
+            }
         }
 
         // Match keyword primarily on URL part, also allow credentials match for non-URL keywords
@@ -108,7 +154,10 @@ rl.on('line', (line) => {
                     break;
                 }
             }
-            if (excluded) return;
+            if (excluded) {
+                maybeEmitProgress();
+                return;
+            }
         }
 
         for (let i = 0; i < keywordList.length; i++) {
@@ -126,7 +175,10 @@ rl.on('line', (line) => {
         const outputLine = stripUrl ? stripUrlFromLine(line) : line;
 
         if (dedup) {
-            if (seenSet.has(outputLine)) return;
+            if (seenSet.has(outputLine)) {
+                maybeEmitProgress();
+                return;
+            }
             seenSet.add(outputLine);
         }
 
@@ -142,32 +194,11 @@ rl.on('line', (line) => {
         }
     }
 
-    // Send progress every 50k lines
-    if (totalLines % 50000 === 0) {
-        parentPort.postMessage({
-            type: 'progress',
-            total: totalLines,
-            filtered: filteredLines,
-            lines: results.splice(0), // Send and clear
-            lineDomains: lineDomains.splice(0),
-            perKeyword: cloneAndClear(perKeyword),
-            domainCount: { ...domainCount }
-        });
-    }
+    maybeEmitProgress();
 });
 
 rl.on('close', () => {
-    // Send remaining data
-    parentPort.postMessage({
-        type: 'progress',
-        total: totalLines,
-        filtered: filteredLines,
-        lines: results,
-        lineDomains,
-        perKeyword,
-        domainCount
-    });
-
+    emitFinalProgress();
     parentPort.postMessage({ type: 'complete' });
 });
 
