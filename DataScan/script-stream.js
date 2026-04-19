@@ -1,11 +1,12 @@
-// ZenScan v1.0 — Main Engine
+// ZenScan v1.0 — Stream Engine (Optimized for Large Files)
 document.addEventListener('DOMContentLoaded', () => {
     // ─── DOM Elements ───
     const $ = id => document.getElementById(id);
     const el = {
-        fileInput:      $('fileInput'),
-        dropZone:       $('dropZone'),
-        fileList:       $('fileList'),
+        selectFileBtn:  $('selectFileBtn'),
+        selectedFileInfo: $('selectedFileInfo'),
+        selectedFileName: $('selectedFileName'),
+        selectedFileSize: $('selectedFileSize'),
         keyword:        $('keyword'),
         excludeKeyword: $('excludeKeyword'),
         stripUrl:       $('stripUrl'),
@@ -31,27 +32,24 @@ document.addEventListener('DOMContentLoaded', () => {
         progressBar:    $('progressBar'),
         savedBadge:     $('savedBadge'),
         toastContainer: $('toastContainer'),
-        loadFromDownloadsBtn: $('loadFromDownloadsBtn'),
     };
 
     // ─── State ───
     let state = {
-        worker: null,
-        files: [],           // Array of File objects
-        totalFileSize: 0,
+        selectedFile: null,
+        eventSource: null,
         totalCount: 0,
         foundCount: 0,
-        bytesRead: 0,
         lastTotal: 0,
         startTime: 0,
         blobChunks: [],
-        perKeywordChunks: {},  // { keyword: [Blob, ...] }
-        perKeywordCounts: {},  // { keyword: number }
+        perKeywordChunks: {},
+        perKeywordCounts: {},
         isProcessing: false,
         speedTimer: null,
     };
 
-    // ─── Keyword Persistence (localStorage) ───
+    // ─── Keyword Persistence ───
     const STORAGE_KEY = 'zenscan_keywords';
     const SESSION_KEY = 'zenscan_sessions';
 
@@ -84,8 +82,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
     loadKeywords();
 
-    // ─── Load from Downloads ───
-    el.loadFromDownloadsBtn.addEventListener('click', async () => {
+    // ─── Parse Keywords ───
+    function parseKeywords() {
+        return el.keyword.value
+            .split('\n')
+            .map(k => k.trim())
+            .filter(k => k.length > 0);
+    }
+
+    // ─── File Selection ───
+    el.selectFileBtn.addEventListener('click', async () => {
         try {
             const res = await fetch('/api/files');
             const data = await res.json();
@@ -100,15 +106,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 return;
             }
 
-            // Show selection modal
-            showDownloadsModal(data.files);
+            showFileSelectionModal(data.files);
         } catch (err) {
             notify('Lỗi kết nối server: ' + err.message, 'error');
         }
     });
 
-    function showDownloadsModal(files) {
-        // Create modal
+    function showFileSelectionModal(files) {
         const modal = document.createElement('div');
         modal.style.cssText = `
             position: fixed;
@@ -136,12 +140,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
         content.innerHTML = `
             <h3 style="margin: 0 0 1rem 0; color: var(--text-primary); font-size: 1.2rem;">
-                <i class="fas fa-folder-open"></i> Chọn file từ Downloads
+                <i class="fas fa-folder-open"></i> Chọn file để scan
             </h3>
             <div id="modalFileList" style="display: flex; flex-direction: column; gap: 0.5rem; margin-bottom: 1rem;">
                 ${files.map((f, i) => `
-                    <label style="display: flex; align-items: center; gap: 0.75rem; padding: 0.75rem; background: rgba(0,0,0,0.3); border: 1px solid var(--border); border-radius: var(--radius-md); cursor: pointer; transition: all 0.2s;" class="file-select-item">
-                        <input type="checkbox" value="${i}" style="width: 18px; height: 18px; cursor: pointer;">
+                    <label style="display: flex; align-items: center; gap: 0.75rem; padding: 0.75rem; background: rgba(0,0,0,0.3); border: 1px solid var(--border); border-radius: var(--radius-md); cursor: pointer; transition: all 0.2s;" class="file-select-item" data-index="${i}">
+                        <input type="radio" name="fileSelect" value="${i}" style="width: 18px; height: 18px; cursor: pointer;">
                         <div style="flex: 1;">
                             <div style="color: var(--text-primary); font-size: 0.85rem; font-weight: 600; margin-bottom: 0.25rem;">${escapeHtml(f.name)}</div>
                             <div style="color: var(--text-dim); font-size: 0.7rem; font-family: var(--font-mono);">
@@ -152,8 +156,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 `).join('')}
             </div>
             <div style="display: flex; gap: 0.5rem;">
-                <button id="modalLoadBtn" class="btn btn-primary" style="flex: 1;">
-                    <i class="fas fa-check"></i> Tải file đã chọn
+                <button id="modalSelectBtn" class="btn btn-primary" style="flex: 1;">
+                    <i class="fas fa-check"></i> Chọn file này
                 </button>
                 <button id="modalCancelBtn" class="btn btn-ghost">
                     <i class="fas fa-xmark"></i> Hủy
@@ -176,18 +180,24 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         });
 
-        // Load selected files
-        document.getElementById('modalLoadBtn').addEventListener('click', async () => {
-            const selected = Array.from(content.querySelectorAll('input[type="checkbox"]:checked'))
-                .map(cb => files[parseInt(cb.value)]);
-
-            if (selected.length === 0) {
+        document.getElementById('modalSelectBtn').addEventListener('click', () => {
+            const selected = content.querySelector('input[name="fileSelect"]:checked');
+            if (!selected) {
                 notify('Chưa chọn file nào!', 'error');
                 return;
             }
 
+            const file = files[parseInt(selected.value)];
+            state.selectedFile = file;
+
+            el.selectedFileName.textContent = file.name;
+            el.selectedFileSize.textContent = formatBytes(file.size);
+            el.selectedFileInfo.style.display = 'block';
+            el.dataVolume.textContent = formatBytes(file.size);
+            el.processBtn.disabled = false;
+
             modal.remove();
-            await loadFilesFromServer(selected);
+            notify('Đã chọn file: ' + file.name, 'success');
         });
 
         document.getElementById('modalCancelBtn').addEventListener('click', () => {
@@ -199,180 +209,22 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    async function loadFilesFromServer(fileInfos) {
-        const loadedFiles = [];
-
-        for (const info of fileInfos) {
-            try {
-                const res = await fetch(`/api/files/${encodeURIComponent(info.name)}/content`);
-
-                if (!res.ok) {
-                    notify(`Lỗi tải ${info.name}: ${res.statusText}`, 'error');
-                    continue;
-                }
-
-                // Get as blob to avoid string size limit
-                const blob = await res.blob();
-                const file = new File([blob], info.name, { type: 'text/plain' });
-                loadedFiles.push(file);
-            } catch (err) {
-                notify(`Lỗi tải ${info.name}: ${err.message}`, 'error');
-            }
-        }
-
-        if (loadedFiles.length > 0) {
-            addFiles(loadedFiles);
-            notify(`Đã tải ${loadedFiles.length} file từ Downloads!`, 'success');
-        }
-    }
-
-    // ─── Parse Keywords ───
-    function parseKeywords() {
-        return el.keyword.value
-            .split('\n')
-            .map(k => k.trim())
-            .map(k => stripUrlFromKeyword(k))
-            .filter(k => k.length > 0);
-    }
-
-    function stripUrlFromKeyword(kw) {
-        // Strip http(s):// and trailing slashes
-        return kw.replace(/^https?:\/\//i, '').replace(/\/+$/, '').toLowerCase();
-    }
-
-    // ─── Multi-file & Folder Drop ───
-    // Prevent browser default drag behavior on the whole page
-    document.addEventListener('dragover', e => e.preventDefault());
-    document.addEventListener('drop', e => e.preventDefault());
-
-    el.dropZone.addEventListener('dragover', e => {
-        e.preventDefault();
-        e.stopPropagation();
-        el.dropZone.classList.add('dragover');
-    });
-    el.dropZone.addEventListener('dragleave', e => {
-        e.preventDefault();
-        el.dropZone.classList.remove('dragover');
-    });
-    el.dropZone.addEventListener('drop', async e => {
-        e.preventDefault();
-        e.stopPropagation();
-        el.dropZone.classList.remove('dragover');
-
-        const items = e.dataTransfer.items;
-        const newFiles = [];
-
-        for (let i = 0; i < items.length; i++) {
-            const entry = items[i].webkitGetAsEntry?.() || items[i].getAsEntry?.();
-            if (entry) {
-                const files = await readEntry(entry);
-                newFiles.push(...files);
-            } else {
-                const file = items[i].getAsFile();
-                if (file && file.name.endsWith('.txt')) newFiles.push(file);
-            }
-        }
-
-        addFiles(newFiles);
-    });
-
-    async function readEntry(entry) {
-        const results = [];
-        if (entry.isFile) {
-            const file = await new Promise(resolve => entry.file(resolve));
-            if (file.name.endsWith('.txt')) results.push(file);
-        } else if (entry.isDirectory) {
-            const reader = entry.createReader();
-            let entries = await new Promise(resolve => reader.readEntries(resolve));
-            for (const sub of entries) {
-                results.push(...(await readEntry(sub)));
-            }
-        }
-        return results;
-    }
-
-    // File input change (works with both multi-file and directory selection)
-    el.fileInput.addEventListener('change', e => {
-        const newFiles = Array.from(e.target.files).filter(f => f.name.endsWith('.txt'));
-        addFiles(newFiles);
-        // Reset input so same files can be selected again
-        el.fileInput.value = '';
-    });
-
-    function addFiles(newFiles) {
-        if (newFiles.length === 0) {
-            notify('Không tìm thấy file .txt nào!', 'error');
-            return;
-        }
-        // Append, avoiding duplicates by name+size
-        const existing = new Set(state.files.map(f => f.name + f.size));
-        for (const f of newFiles) {
-            if (!existing.has(f.name + f.size)) {
-                state.files.push(f);
-            }
-        }
-        state.totalFileSize = state.files.reduce((s, f) => s + f.size, 0);
-        el.dataVolume.innerText = formatBytes(state.totalFileSize);
-        el.processBtn.disabled = false;
-        renderFileList();
-        notify(`Đã nạp ${newFiles.length} file (.txt)`, 'success');
-    }
-
-    function removeFile(index) {
-        state.files.splice(index, 1);
-        state.totalFileSize = state.files.reduce((s, f) => s + f.size, 0);
-        el.dataVolume.innerText = state.files.length ? formatBytes(state.totalFileSize) : '0 MB';
-        if (state.files.length === 0) el.processBtn.disabled = true;
-        renderFileList();
-    }
-
-    function renderFileList() {
-        el.fileList.innerHTML = '';
-        state.files.forEach((f, i) => {
-            const tag = document.createElement('div');
-            tag.className = 'file-tag';
-            tag.innerHTML = `
-                <i class="fas fa-file-lines"></i>
-                <span>${f.name}</span>
-                <span class="file-size">${formatBytes(f.size)}</span>
-                <span class="file-remove" data-index="${i}"><i class="fas fa-xmark"></i></span>
-            `;
-            el.fileList.appendChild(tag);
-        });
-        // Attach remove handlers
-        el.fileList.querySelectorAll('.file-remove').forEach(btn => {
-            btn.addEventListener('click', e => {
-                e.stopPropagation();
-                removeFile(parseInt(btn.dataset.index));
-            });
-        });
-    }
-
-    function formatBytes(bytes) {
-        if (bytes < 1024) return bytes + ' B';
-        if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
-        if (bytes < 1073741824) return (bytes / 1048576).toFixed(2) + ' MB';
-        return (bytes / 1073741824).toFixed(2) + ' GB';
-    }
-
-    // ─── Process ───
+    // ─── Process Stream ───
     function startProcess() {
         const keywords = parseKeywords();
         const excludeKeywords = el.excludeKeyword.value.trim();
         const stripUrl = el.stripUrl.checked;
         const dedup = el.dedupToggle.checked;
 
-        if (state.files.length === 0 || state.isProcessing) return;
+        if (!state.selectedFile || state.isProcessing) return;
         if (keywords.length === 0) return notify('Chưa nhập keyword!', 'error');
 
-        // Save keywords
         saveKeywords();
 
         // Reset
         state.isProcessing = true;
         state.totalCount = 0;
         state.foundCount = 0;
-        state.bytesRead = 0;
         state.lastTotal = 0;
         state.blobChunks = [];
         state.perKeywordChunks = {};
@@ -397,41 +249,34 @@ document.addEventListener('DOMContentLoaded', () => {
         el.processBtn.classList.add('hidden');
         el.stopBtn.classList.remove('hidden');
 
-        // Create worker
-        state.worker = new Worker('worker_v6.js?v=' + Date.now());
-
         state.speedTimer = setInterval(() => {
             const delta = state.totalCount - state.lastTotal;
             el.scanSpeed.innerText = delta.toLocaleString();
             state.lastTotal = state.totalCount;
-
-            const progress = state.totalFileSize > 0
-                ? (state.bytesRead / state.totalFileSize) * 100
-                : 0;
-            el.progressBar.style.width = `${Math.min(progress, 100)}%`;
         }, 1000);
 
-        // Send all files + keywords to worker
-        state.worker.postMessage({
-            files: state.files,
-            keywords,
+        // Start SSE stream with fast mode
+        const params = new URLSearchParams({
+            filename: state.selectedFile.name,
+            keywords: JSON.stringify(keywords),
             excludeKeywords,
             stripUrl,
-            dedup,
+            dedup
         });
 
-        state.worker.onmessage = e => {
-            const data = e.data;
+        state.eventSource = new EventSource(`/api/scan-fast?${params}`);
+
+        state.eventSource.onmessage = (event) => {
+            const data = JSON.parse(event.data);
 
             if (data.type === 'progress' || data.type === 'complete') {
                 state.totalCount = data.total;
                 state.foundCount = data.filtered;
-                state.bytesRead = data.bytes;
 
                 el.totalLines.innerText = state.totalCount.toLocaleString();
                 el.filteredLines.innerText = state.foundCount.toLocaleString();
 
-                // Store blobs globally
+                // Store blobs
                 if (data.results && data.results.length > 0) {
                     state.blobChunks.push(new Blob([data.results + '\n'], { type: 'text/plain' }));
                 }
@@ -446,7 +291,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 }
 
-                // Update per-keyword counts
+                // Update counts
                 if (data.perKeywordCounts) {
                     for (const [kw, count] of Object.entries(data.perKeywordCounts)) {
                         state.perKeywordCounts[kw] = count;
@@ -462,12 +307,18 @@ document.addEventListener('DOMContentLoaded', () => {
                     renderAnalytics(data.topDomains);
                 }
 
-                if (data.type === 'complete') endProcess(true);
-
+                if (data.type === 'complete') {
+                    endProcess(true);
+                }
             } else if (data.type === 'error') {
                 notify('Lỗi: ' + data.message, 'error');
                 endProcess(false);
             }
+        };
+
+        state.eventSource.onerror = () => {
+            notify('Lỗi kết nối stream!', 'error');
+            endProcess(false);
         };
     }
 
@@ -484,13 +335,11 @@ document.addEventListener('DOMContentLoaded', () => {
         });
         el.consoleOutput.appendChild(frag);
         el.consoleOutput.scrollTop = el.consoleOutput.scrollHeight;
-        // Keep buffer size reasonable
         while (el.consoleOutput.childNodes.length > 300) {
             el.consoleOutput.removeChild(el.consoleOutput.firstChild);
         }
     }
 
-    // Console search filter
     el.consoleSearch.addEventListener('input', () => {
         const term = el.consoleSearch.value.toLowerCase();
         const lines = el.consoleOutput.querySelectorAll('.log-line:not(.empty)');
@@ -547,7 +396,10 @@ document.addEventListener('DOMContentLoaded', () => {
     function endProcess(done) {
         state.isProcessing = false;
         clearInterval(state.speedTimer);
-        if (state.worker) state.worker.terminate();
+        if (state.eventSource) {
+            state.eventSource.close();
+            state.eventSource = null;
+        }
 
         el.statusDot.classList.remove('active');
         el.statusText.innerText = done ? 'COMPLETED' : 'STOPPED';
@@ -564,7 +416,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // ─── Downloads ───
-    // Download all
     el.downloadBtn.addEventListener('click', () => {
         if (state.blobChunks.length === 0) return notify('Không có dữ liệu để tải!', 'error');
         const ts = Date.now();
@@ -572,7 +423,6 @@ document.addEventListener('DOMContentLoaded', () => {
         notify('Đã tải file tổng hợp!', 'success');
     });
 
-    // Download per keyword (as ZIP)
     el.splitDownloadBtn.addEventListener('click', async () => {
         const kwKeys = Object.keys(state.perKeywordChunks).filter(k => state.perKeywordChunks[k].length > 0);
         if (kwKeys.length === 0) return notify('Không có dữ liệu để tải!', 'error');
@@ -599,7 +449,6 @@ document.addEventListener('DOMContentLoaded', () => {
             URL.revokeObjectURL(url);
             notify(`Đã tải ZIP với ${kwKeys.length} file!`, 'success');
         } catch (err) {
-            // Fallback: download individually
             notify('JSZip không khả dụng, tải từng file...', 'info');
             const ts = Date.now();
             for (let i = 0; i < kwKeys.length; i++) {
@@ -612,7 +461,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // Download single keyword results
     function downloadPerKeyword(kw) {
         const chunks = state.perKeywordChunks[kw];
         if (!chunks || chunks.length === 0) return notify(`Chưa có dữ liệu cho "${kw}"`, 'error');
@@ -631,7 +479,6 @@ document.addEventListener('DOMContentLoaded', () => {
         URL.revokeObjectURL(url);
     }
 
-    // ─── Copy to clipboard ───
     el.copyBtn.addEventListener('click', async () => {
         if (state.blobChunks.length === 0) return notify('Không có dữ liệu để copy!', 'error');
 
@@ -657,19 +504,15 @@ document.addEventListener('DOMContentLoaded', () => {
     function resetApp() {
         if (state.isProcessing) endProcess(false);
 
-        state.files = [];
-        state.totalFileSize = 0;
+        state.selectedFile = null;
         state.totalCount = 0;
         state.foundCount = 0;
-        state.bytesRead = 0;
         state.lastTotal = 0;
         state.blobChunks = [];
         state.perKeywordChunks = {};
         state.perKeywordCounts = {};
 
-        el.fileInput.value = '';
-        el.fileList.innerHTML = '';
-        // Keep keywords (saved in localStorage)
+        el.selectedFileInfo.style.display = 'none';
         el.excludeKeyword.value = '';
         el.totalLines.innerText = '0';
         el.filteredLines.innerText = '0';
@@ -697,9 +540,8 @@ document.addEventListener('DOMContentLoaded', () => {
             time: new Date().toLocaleString('vi-VN'),
             keywords: parseKeywords().length,
             results: state.foundCount,
-            files: state.files.length,
+            file: state.selectedFile?.name || 'Unknown'
         });
-        // Keep last 10
         if (sessions.length > 10) sessions.length = 10;
         localStorage.setItem(SESSION_KEY, JSON.stringify(sessions));
         renderSessions();
@@ -737,7 +579,6 @@ document.addEventListener('DOMContentLoaded', () => {
             setTimeout(() => toast.remove(), 300);
         }, 3500);
 
-        // Keep max 4 toasts
         while (el.toastContainer.childNodes.length > 4) {
             el.toastContainer.removeChild(el.toastContainer.firstChild);
         }
@@ -748,5 +589,12 @@ document.addEventListener('DOMContentLoaded', () => {
         const div = document.createElement('div');
         div.textContent = str;
         return div.innerHTML;
+    }
+
+    function formatBytes(bytes) {
+        if (bytes < 1024) return bytes + ' B';
+        if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+        if (bytes < 1073741824) return (bytes / 1048576).toFixed(2) + ' MB';
+        return (bytes / 1073741824).toFixed(2) + ' GB';
     }
 });

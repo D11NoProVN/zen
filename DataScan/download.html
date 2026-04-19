@@ -59,6 +59,101 @@
             border-color: var(--accent);
             box-shadow: 0 0 0 3px var(--accent-glow);
         }
+
+        /* Download Progress */
+        .download-progress {
+            background: var(--bg-card);
+            backdrop-filter: blur(24px);
+            border: 1px solid var(--border-accent);
+            border-radius: var(--radius-xl);
+            padding: 1.5rem;
+            margin-bottom: 2rem;
+            display: none;
+        }
+        .download-progress.active {
+            display: block;
+            animation: slideDown 0.3s ease-out;
+        }
+        @keyframes slideDown {
+            from { opacity: 0; transform: translateY(-20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .progress-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+        .progress-filename {
+            font-size: 0.9rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .progress-filename i {
+            color: var(--accent-light);
+            animation: pulse 1.5s ease-in-out infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        .progress-bar-container {
+            height: 8px;
+            background: rgba(255,255,255,0.05);
+            border-radius: 8px;
+            overflow: hidden;
+            margin-bottom: 1rem;
+        }
+        .progress-bar-fill {
+            height: 100%;
+            background: var(--accent-gradient);
+            border-radius: 8px;
+            transition: width 0.3s ease;
+            box-shadow: 0 0 12px var(--accent-glow);
+        }
+        .progress-stats {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 1rem;
+        }
+        .progress-stat {
+            text-align: center;
+        }
+        .progress-stat-label {
+            font-size: 0.65rem;
+            color: var(--text-dim);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 0.25rem;
+        }
+        .progress-stat-value {
+            font-size: 1.1rem;
+            font-weight: 700;
+            font-family: var(--font-mono);
+            color: var(--accent-light);
+        }
+
+        /* Files Grid */
+        .files-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+        .files-header h3 {
+            font-size: 1rem;
+            color: var(--text-primary);
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .files-actions {
+            display: flex;
+            gap: 0.5rem;
+        }
         .files-grid {
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
@@ -76,6 +171,18 @@
         .file-card:hover {
             border-color: var(--border-hover);
             transform: translateY(-2px);
+        }
+        .file-card.selected {
+            border-color: var(--accent);
+            background: rgba(108, 92, 231, 0.05);
+        }
+        .file-checkbox {
+            position: absolute;
+            top: 1rem;
+            right: 1rem;
+            width: 20px;
+            height: 20px;
+            cursor: pointer;
         }
         .file-icon {
             width: 48px;
@@ -95,6 +202,7 @@
             color: var(--text-primary);
             margin-bottom: 0.5rem;
             word-break: break-all;
+            padding-right: 30px;
         }
         .file-meta {
             font-size: 0.7rem;
@@ -122,35 +230,6 @@
             margin-bottom: 1rem;
             opacity: 0.3;
         }
-        .loading-overlay {
-            position: fixed;
-            inset: 0;
-            background: rgba(0,0,0,0.8);
-            backdrop-filter: blur(8px);
-            display: none;
-            align-items: center;
-            justify-content: center;
-            z-index: 9999;
-        }
-        .loading-overlay.active {
-            display: flex;
-        }
-        .loading-spinner {
-            text-align: center;
-            color: var(--text-primary);
-        }
-        .spinner {
-            width: 50px;
-            height: 50px;
-            border: 4px solid rgba(255,255,255,0.1);
-            border-top-color: var(--accent);
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
-            margin: 0 auto 1rem;
-        }
-        @keyframes spin {
-            to { transform: rotate(360deg); }
-        }
     </style>
 </head>
 <body>
@@ -163,20 +242,13 @@
 
     <div class="toast-container" id="toastContainer"></div>
 
-    <div class="loading-overlay" id="loadingOverlay">
-        <div class="loading-spinner">
-            <div class="spinner"></div>
-            <div>Đang tải file...</div>
-        </div>
-    </div>
-
     <div class="download-container">
         <div class="download-header">
             <div>
                 <h1 class="text-gradient" style="font-size: 2rem; margin-bottom: 0.5rem;">Download Manager</h1>
                 <p style="color: var(--text-dim); font-size: 0.85rem;">Tải và quản lý data files</p>
             </div>
-            <a href="/" class="btn btn-ghost">
+            <a href="/index-stream.html" class="btn btn-ghost">
                 <i class="fas fa-arrow-left"></i> Về trang Scan
             </a>
         </div>
@@ -204,6 +276,55 @@
             </div>
         </div>
 
+        <!-- Download Progress -->
+        <div class="download-progress" id="downloadProgress">
+            <div class="progress-header">
+                <div class="progress-filename">
+                    <i class="fas fa-spinner fa-spin"></i>
+                    <span id="progressFilename">Đang tải...</span>
+                </div>
+                <button class="btn btn-ghost" id="cancelDownloadBtn" style="padding: 0.4rem 0.8rem; font-size: 0.7rem;">
+                    <i class="fas fa-xmark"></i> Hủy
+                </button>
+            </div>
+            <div class="progress-bar-container">
+                <div class="progress-bar-fill" id="progressBarFill" style="width: 0%"></div>
+            </div>
+            <div class="progress-stats">
+                <div class="progress-stat">
+                    <div class="progress-stat-label">Đã tải</div>
+                    <div class="progress-stat-value" id="progressDownloaded">0 MB</div>
+                </div>
+                <div class="progress-stat">
+                    <div class="progress-stat-label">Tổng cộng</div>
+                    <div class="progress-stat-value" id="progressTotal">0 MB</div>
+                </div>
+                <div class="progress-stat">
+                    <div class="progress-stat-label">Tốc độ</div>
+                    <div class="progress-stat-value" id="progressSpeed">0 MB/s</div>
+                </div>
+                <div class="progress-stat">
+                    <div class="progress-stat-label">Tiến độ</div>
+                    <div class="progress-stat-value" id="progressPercent">0%</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="files-header">
+            <h3>
+                <i class="fas fa-folder-open"></i>
+                Downloaded Files (<span id="fileCount">0</span>)
+            </h3>
+            <div class="files-actions">
+                <button class="btn btn-ghost" id="selectAllBtn" style="padding: 0.5rem 0.8rem; font-size: 0.7rem;">
+                    <i class="fas fa-check-double"></i> Chọn tất cả
+                </button>
+                <button class="btn btn-danger" id="deleteSelectedBtn" style="padding: 0.5rem 0.8rem; font-size: 0.7rem;" disabled>
+                    <i class="fas fa-trash"></i> Xóa đã chọn
+                </button>
+            </div>
+        </div>
+
         <div id="filesContainer">
             <div class="empty-state">
                 <i class="fas fa-folder-open"></i>
@@ -212,157 +333,6 @@
         </div>
     </div>
 
-    <script>
-        const API_BASE = '';
-        const $ = id => document.getElementById(id);
-
-        // Toast notification
-        function notify(msg, type = 'info') {
-            const icons = { success: 'fa-check-circle', error: 'fa-exclamation-circle', info: 'fa-info-circle' };
-            const toast = document.createElement('div');
-            toast.className = `toast ${type}`;
-            toast.innerHTML = `<i class="fas ${icons[type] || icons.info}"></i> ${escapeHtml(msg)}`;
-            $('toastContainer').appendChild(toast);
-
-            setTimeout(() => {
-                toast.classList.add('exit');
-                setTimeout(() => toast.remove(), 300);
-            }, 3500);
-        }
-
-        function escapeHtml(str) {
-            const div = document.createElement('div');
-            div.textContent = str;
-            return div.innerHTML;
-        }
-
-        function formatBytes(bytes) {
-            if (bytes < 1024) return bytes + ' B';
-            if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
-            if (bytes < 1073741824) return (bytes / 1048576).toFixed(2) + ' MB';
-            return (bytes / 1073741824).toFixed(2) + ' GB';
-        }
-
-        function formatDate(date) {
-            return new Date(date).toLocaleString('vi-VN');
-        }
-
-        // Load files
-        async function loadFiles() {
-            try {
-                const res = await fetch(`${API_BASE}/api/files`);
-                const data = await res.json();
-
-                if (data.success) {
-                    renderFiles(data.files);
-                } else {
-                    notify('Lỗi tải danh sách file: ' + data.error, 'error');
-                }
-            } catch (err) {
-                notify('Lỗi kết nối server: ' + err.message, 'error');
-            }
-        }
-
-        // Render files
-        function renderFiles(files) {
-            const container = $('filesContainer');
-
-            if (files.length === 0) {
-                container.innerHTML = `
-                    <div class="empty-state">
-                        <i class="fas fa-folder-open"></i>
-                        <p>Chưa có file nào. Nhập URL để tải file.</p>
-                    </div>
-                `;
-                return;
-            }
-
-            container.innerHTML = `<div class="files-grid">${files.map(file => `
-                <div class="file-card glass">
-                    <div class="file-icon">
-                        <i class="fas fa-file-lines"></i>
-                    </div>
-                    <div class="file-name">${escapeHtml(file.name)}</div>
-                    <div class="file-meta">
-                        <i class="fas fa-weight-hanging"></i> ${formatBytes(file.size)}
-                    </div>
-                    <div class="file-meta">
-                        <i class="fas fa-clock"></i> ${formatDate(file.modified)}
-                    </div>
-                    <div class="file-actions">
-                        <button class="btn btn-ghost" onclick="deleteFile('${escapeHtml(file.name)}')">
-                            <i class="fas fa-trash"></i> Xóa
-                        </button>
-                    </div>
-                </div>
-            `).join('')}</div>`;
-        }
-
-        // Download file
-        async function downloadFile() {
-            const url = $('urlInput').value.trim();
-
-            if (!url) {
-                notify('Vui lòng nhập URL!', 'error');
-                return;
-            }
-
-            $('loadingOverlay').classList.add('active');
-
-            try {
-                const res = await fetch(`${API_BASE}/api/download`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ url })
-                });
-
-                const data = await res.json();
-
-                if (data.success) {
-                    notify(`Đã tải thành công: ${data.file.name}`, 'success');
-                    $('urlInput').value = '';
-                    loadFiles();
-                } else {
-                    notify('Lỗi tải file: ' + data.error, 'error');
-                }
-            } catch (err) {
-                notify('Lỗi: ' + err.message, 'error');
-            } finally {
-                $('loadingOverlay').classList.remove('active');
-            }
-        }
-
-        // Delete file
-        async function deleteFile(filename) {
-            if (!confirm(`Xóa file "${filename}"?`)) return;
-
-            try {
-                const res = await fetch(`${API_BASE}/api/files/${encodeURIComponent(filename)}`, {
-                    method: 'DELETE'
-                });
-
-                const data = await res.json();
-
-                if (data.success) {
-                    notify('Đã xóa file!', 'success');
-                    loadFiles();
-                } else {
-                    notify('Lỗi xóa file: ' + data.error, 'error');
-                }
-            } catch (err) {
-                notify('Lỗi: ' + err.message, 'error');
-            }
-        }
-
-        // Event listeners
-        $('downloadBtn').addEventListener('click', downloadFile);
-        $('refreshBtn').addEventListener('click', loadFiles);
-        $('urlInput').addEventListener('keypress', e => {
-            if (e.key === 'Enter') downloadFile();
-        });
-
-        // Initial load
-        loadFiles();
-    </script>
+    <script src="download-manager.js"></script>
 </body>
 </html>
