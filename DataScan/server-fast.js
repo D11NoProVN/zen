@@ -28,6 +28,7 @@ const {
 } = require('./scan-request-utils');
 const {
     ArchiveExtractionError,
+    ArchivePasswordRequiredError,
     detectDownloadedArchiveType,
     extractDownloadedArchive
 } = require('./download-archive-utils');
@@ -84,7 +85,7 @@ function buildDownloadFilename(url) {
     return basename;
 }
 
-async function finalizeDownloadedFile({ filepath, filename }) {
+async function finalizeDownloadedFile({ filepath, filename, password }) {
     const archiveType = detectDownloadedArchiveType(filename);
     if (!archiveType) {
         const stats = fs.statSync(filepath);
@@ -101,7 +102,8 @@ async function finalizeDownloadedFile({ filepath, filename }) {
     const extraction = await extractDownloadedArchive({
         archivePath: filepath,
         archiveType,
-        downloadDir: DOWNLOAD_DIR
+        downloadDir: DOWNLOAD_DIR,
+        password
     });
 
     return { extraction };
@@ -293,6 +295,10 @@ app.post('/api/download', async (req, res) => {
 
         res.json(createFinalDownloadPayload({ finalized, elapsed, speed }));
     } catch (err) {
+        if (err instanceof ArchivePasswordRequiredError) {
+            const filename = getDownloadStartFilename(url);
+            return res.status(400).json({ success: false, error: 'PASSWORD_REQUIRED', filename, message: getDownloadErrorMessage(err) });
+        }
         res.status(getDownloadErrorStatus(err)).json({ success: false, error: getDownloadErrorMessage(err) });
     }
 });
@@ -375,11 +381,39 @@ app.post('/api/download-stream', async (req, res) => {
 
         res.end();
     } catch (err) {
-        res.write(`data: ${JSON.stringify({
-            type: 'error',
-            message: getDownloadErrorMessage(err)
-        })}\n\n`);
+        if (err instanceof ArchivePasswordRequiredError) {
+            const filename = getDownloadStartFilename(url);
+            res.write(`data: ${JSON.stringify({
+                type: 'password_required',
+                filename,
+                message: getDownloadErrorMessage(err)
+            })}\n\n`);
+        } else {
+            res.write(`data: ${JSON.stringify({
+                type: 'error',
+                message: getDownloadErrorMessage(err)
+            })}\n\n`);
+        }
         res.end();
+    }
+});
+
+app.post('/api/extract', async (req, res) => {
+    const { filename, password } = req.body;
+    if (!filename) {
+        return res.status(400).json({ success: false, error: 'Filename is required' });
+    }
+
+    try {
+        const filepath = resolveDownloadFilePath(DOWNLOAD_DIR, filename);
+        if (!fs.existsSync(filepath)) {
+            return res.status(404).json({ success: false, error: 'File not found' });
+        }
+
+        const finalized = await finalizeDownloadedFile({ filepath, filename, password });
+        res.json(createFinalDownloadPayload({ finalized, elapsed: 0, speed: 0 }));
+    } catch (err) {
+        res.status(getDownloadErrorStatus(err)).json({ success: false, error: getDownloadErrorMessage(err) });
     }
 });
 

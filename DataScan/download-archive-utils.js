@@ -11,6 +11,13 @@ const { pipeline } = require('node:stream/promises');
 
 class ArchiveExtractionError extends Error {}
 
+class ArchivePasswordRequiredError extends ArchiveExtractionError {
+    constructor(message = 'Mật khẩu giải nén không đúng hoặc chưa được cung cấp') {
+        super(message);
+        this.name = 'ArchivePasswordRequiredError';
+    }
+}
+
 function detectDownloadedArchiveType(filename) {
     const lower = String(filename || '').toLowerCase();
     if (lower.endsWith('.zip')) return 'zip';
@@ -22,11 +29,10 @@ function buildExtractionResult(archiveType, createdFiles) {
     return {
         archiveType,
         extractedCount: createdFiles.length,
-        files: createdFiles.map(file => ({
-            name: file.filename,
-            size: fs.statSync(file.filepath).size,
-            modified: fs.statSync(file.filepath).mtime,
-            path: file.filepath
+        files: createdFiles.map(f => ({
+            name: path.basename(f.filepath),
+            path: f.filepath,
+            size: fs.statSync(f.filepath).size
         }))
     };
 }
@@ -60,11 +66,15 @@ function normalizeArchiveError(err, fallbackMessage) {
         return err;
     }
 
-    const message = err?.message ? `${fallbackMessage}: ${err.message}` : fallbackMessage;
-    return new ArchiveExtractionError(message);
+    const message = err?.message || '';
+    if (err?.reason === 'ERAR_MISSING_PASSWORD' || err?.reason === 'ERAR_BAD_PASSWORD' || message.includes('MISSING_PASSWORD') || message.includes('BAD_PASSWORD') || message.includes('Password') || message.includes('password')) {
+        return new ArchivePasswordRequiredError();
+    }
+
+    return new ArchiveExtractionError(message ? `${fallbackMessage}: ${message}` : fallbackMessage);
 }
 
-async function extractZipArchive({ archivePath, downloadDir }) {
+async function extractZipArchive({ archivePath, downloadDir, password }) {
     const directory = await unzipper.Open.file(archivePath);
     const createdFiles = [];
 
@@ -77,7 +87,7 @@ async function extractZipArchive({ archivePath, downloadDir }) {
             const safeName = ensureDownloadBasename(parsed.base);
             const target = getUniqueDownloadFilename(downloadDir, safeName);
             const writer = fs.createWriteStream(target.filepath);
-            const stream = entry.stream();
+            const stream = entry.stream(password);
             await pipeline(stream, writer);
             createdFiles.push(target);
         }
@@ -85,18 +95,22 @@ async function extractZipArchive({ archivePath, downloadDir }) {
         return finalizeExtraction({ archivePath, archiveType: 'zip', createdFiles });
     } catch (err) {
         cleanupCreatedFiles(createdFiles);
-        cleanupArchiveFile(archivePath);
-        throw normalizeArchiveError(err, 'Failed to extract zip archive');
+        const normalizedErr = normalizeArchiveError(err, 'Failed to extract zip archive');
+        if (!(normalizedErr instanceof ArchivePasswordRequiredError)) {
+            cleanupArchiveFile(archivePath);
+        }
+        throw normalizedErr;
     }
 }
 
-async function extractRarArchive({ archivePath, downloadDir }) {
+async function extractRarArchive({ archivePath, downloadDir, password }) {
     const createdFiles = [];
 
     try {
         const extractor = await createExtractorFromFile({
             filepath: archivePath,
             targetPath: downloadDir,
+            password: password || '',
             filenameTransform: (originalFilename) => {
                 const safeName = ensureDownloadBasename(path.basename(originalFilename));
                 const target = getUniqueDownloadFilename(downloadDir, safeName);
@@ -117,18 +131,21 @@ async function extractRarArchive({ archivePath, downloadDir }) {
         return finalizeExtraction({ archivePath, archiveType: 'rar', createdFiles });
     } catch (err) {
         cleanupCreatedFiles(createdFiles);
-        cleanupArchiveFile(archivePath);
-        throw normalizeArchiveError(err, 'Failed to extract rar archive');
+        const normalizedErr = normalizeArchiveError(err, 'Failed to extract rar archive');
+        if (!(normalizedErr instanceof ArchivePasswordRequiredError)) {
+            cleanupArchiveFile(archivePath);
+        }
+        throw normalizedErr;
     }
 }
 
-async function extractDownloadedArchive({ archivePath, archiveType, downloadDir }) {
+async function extractDownloadedArchive({ archivePath, archiveType, downloadDir, password }) {
     if (archiveType === 'zip') {
-        return extractZipArchive({ archivePath, downloadDir });
+        return extractZipArchive({ archivePath, downloadDir, password });
     }
 
     if (archiveType === 'rar') {
-        return extractRarArchive({ archivePath, downloadDir });
+        return extractRarArchive({ archivePath, downloadDir, password });
     }
 
     throw new ArchiveExtractionError(`Unsupported archive type: ${archiveType}`);
@@ -136,6 +153,7 @@ async function extractDownloadedArchive({ archivePath, archiveType, downloadDir 
 
 module.exports = {
     ArchiveExtractionError,
+    ArchivePasswordRequiredError,
     detectDownloadedArchiveType,
     extractDownloadedArchive
 };

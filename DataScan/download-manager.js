@@ -230,6 +230,35 @@ function handleDownloadProgress(data) {
             el.urlInput.value = '';
             loadFiles();
         }, 1000);
+    } else if (data.type === 'password_required') {
+        const password = prompt('File nén có chứa mật khẩu. Vui lòng nhập mật khẩu để tiếp tục giải nén:');
+        if (!password) {
+            notify('Đã hủy giải nén do không có mật khẩu', 'error');
+            el.downloadProgress.classList.remove('active');
+            return;
+        }
+
+        el.progressFilename.textContent = 'Đang giải nén...';
+        el.progressBarFill.style.width = '100%';
+
+        fetch('/api/extract', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ filename: data.filename, password })
+        })
+        .then(res => res.json())
+        .then(extData => {
+            if (extData.success === false) {
+                notify('Giải nén thất bại: ' + extData.error, 'error');
+                el.downloadProgress.classList.remove('active');
+            } else {
+                handleDownloadProgress({ ...extData, type: 'complete' });
+            }
+        })
+        .catch(err => {
+            notify('Lỗi giải nén: ' + err.message, 'error');
+            el.downloadProgress.classList.remove('active');
+        });
     } else if (data.type === 'error') {
         notify('Lỗi tải file: ' + data.message, 'error');
         el.downloadProgress.classList.remove('active');
