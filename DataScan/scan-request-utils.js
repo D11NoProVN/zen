@@ -100,7 +100,15 @@ function ensureTxtBasename(filename) {
 }
 
 function resolveDownloadFilePath(downloadDir, filename) {
-    const safeFilename = ensureTxtBasename(filename);
+    // We use ensureDownloadBasename instead of ensureTxtBasename to allow .zip/.rar archives
+    const safeFilename = ensureDownloadBasename(filename);
+    
+    // Safety check: ensure the file actually ends with an allowed extension
+    const lower = safeFilename.toLowerCase();
+    if (!lower.endsWith('.txt') && !lower.endsWith('.zip') && !lower.endsWith('.rar')) {
+        throw new InvalidRequestError('Only .txt, .zip, and .rar files are allowed');
+    }
+
     const resolvedDownloadDir = path.resolve(downloadDir);
     const resolvedFilePath = path.resolve(resolvedDownloadDir, safeFilename);
 
