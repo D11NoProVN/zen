@@ -12,6 +12,7 @@ const {
 const {
     createAggregationState,
     applyWorkerProgress,
+    rebuildDomainCountFromLines,
     finalizeAggregatedTotals,
     toTopDomains
 } = require('./scan-fast-worker-aggregation');
@@ -381,14 +382,7 @@ app.post('/api/scan-fast', async (req, res) => {
                     finalizeAggregatedTotals(results);
 
                     if (dedup) {
-                        const rebuiltDomainCount = new Map();
-                        for (const line of results.lines) {
-                            const domain = extractDomain(line);
-                            if (domain) {
-                                rebuiltDomainCount.set(domain, (rebuiltDomainCount.get(domain) || 0) + 1);
-                            }
-                        }
-                        results.domainCount = rebuiltDomainCount;
+                        results.domainCount = rebuildDomainCountFromLines(results.lines);
                     }
 
                     // Send final unsent delta only
@@ -527,14 +521,7 @@ app.get('/api/scan-fast', async (req, res) => {
                     finalizeAggregatedTotals(results);
 
                     if (dedup === 'true') {
-                        const rebuiltDomainCount = new Map();
-                        for (const line of results.lines) {
-                            const domain = extractDomain(line);
-                            if (domain) {
-                                rebuiltDomainCount.set(domain, (rebuiltDomainCount.get(domain) || 0) + 1);
-                            }
-                        }
-                        results.domainCount = rebuiltDomainCount;
+                        results.domainCount = rebuildDomainCountFromLines(results.lines);
                     }
 
                     const topDomains = toTopDomains(results, 10);

@@ -89,6 +89,27 @@ function applyWorkerProgress(state, workerId, msg) {
     snapshot.domainCount = { ...domainSnapshot };
 }
 
+function extractDomain(line) {
+    if (typeof line !== 'string') return null;
+
+    const match = line.match(/(?:https?:\/\/)?([a-z0-9.-]+\.[a-z]{2,})/i);
+    return match ? match[1].toLowerCase() : null;
+}
+
+function rebuildDomainCountFromLines(lines) {
+    const rebuiltDomainCount = new Map();
+    const safeLines = Array.isArray(lines) ? lines : [];
+
+    for (const line of safeLines) {
+        const domain = extractDomain(line);
+        if (domain) {
+            rebuiltDomainCount.set(domain, (rebuiltDomainCount.get(domain) || 0) + 1);
+        }
+    }
+
+    return rebuiltDomainCount;
+}
+
 function finalizeAggregatedTotals(state) {
     state.filtered = state.lines.length;
 
@@ -106,6 +127,7 @@ function toTopDomains(state, limit = 10) {
 module.exports = {
     createAggregationState,
     applyWorkerProgress,
+    rebuildDomainCountFromLines,
     finalizeAggregatedTotals,
     toTopDomains
 };

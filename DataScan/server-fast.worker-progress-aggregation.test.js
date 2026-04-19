@@ -5,7 +5,8 @@ const {
     createAggregationState,
     applyWorkerProgress,
     finalizeAggregatedTotals,
-    toTopDomains
+    toTopDomains,
+    rebuildDomainCountFromLines
 } = require('./scan-fast-worker-aggregation');
 
 function createInitialState() {
@@ -125,4 +126,19 @@ test('domain aggregation should not explode when many progress events arrive', (
     // Correct final domain count should be 100 (latest cumulative), not sum(1..100)
     assert.deepEqual(top, [['bidaithanroblox.com', 100]]);
     assert.equal(state.filtered, 100);
+});
+
+test('rebuildDomainCountFromLines should produce domain counts from deduped lines', () => {
+    const dedupedLines = [
+        'https://bidaithanroblox.com/:u1:p1',
+        'https://bidaithanroblox.com/:u2:p2',
+        'https://example.com/:u3:p3'
+    ];
+
+    const domainMap = rebuildDomainCountFromLines(dedupedLines);
+
+    assert.deepEqual(Array.from(domainMap.entries()).sort((a, b) => a[0].localeCompare(b[0])), [
+        ['bidaithanroblox.com', 2],
+        ['example.com', 1]
+    ]);
 });
