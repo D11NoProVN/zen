@@ -1,4 +1,4 @@
-name: SSH into Runner via Ngrok
+name: SSH into Runner via Ngrok (No Web Needed)
 
 on:
   workflow_dispatch:
@@ -16,26 +16,29 @@ jobs:
           sudo systemctl start ssh
           echo "runner:123456" | sudo chpasswd
 
-      - name: Chạy Ngrok
+      - name: Chạy Ngrok và Lấy Link Trực Tiếp
         env:
           NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
         run: |
-          # Tải và cài đặt Ngrok
+          # 1. Tải và cài đặt
           curl -s -O https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz
           tar -xf ngrok-v3-stable-linux-amd64.tgz
-          
-          # Xác thực token
           ./ngrok config add-authtoken $NGROK_AUTH_TOKEN
           
-          # Mở đường hầm TCP ở background
+          # 2. Chạy ngrok ngầm
           ./ngrok tcp 22 > /dev/null &
+          sleep 5 # Đợi 5 giây cho Ngrok kết nối xong
           
-          # Đợi 5 giây cho kết nối ổn định rồi in ra link
-          sleep 5
-          echo "========================================="
-          echo "Vào Ngrok Dashboard để lấy lệnh SSH:"
-          echo "https://dashboard.ngrok.com/endpoints/tcp"
-          echo "========================================="
+          # 3. Dùng API nội bộ để tự trích xuất lệnh SSH (Không cần web Ngrok)
+          TUNNEL_URL=$(curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url')
+          HOST=$(echo $TUNNEL_URL | sed 's/tcp:\/\///' | cut -d ':' -f 1)
+          PORT=$(echo $TUNNEL_URL | sed 's/tcp:\/\///' | cut -d ':' -f 2)
           
-          # Treo hệ thống (Giữ máy ảo sống tối đa 6 tiếng = 21600 giây)
+          echo "=========================================================="
+          echo "NGROK WEBSITE SẬP CŨNG KHÔNG SAO! LỆNH SSH CỦA BẠN ĐÂY:"
+          echo "ssh -p $PORT runner@$HOST"
+          echo "Mật khẩu: 123456"
+          echo "=========================================================="
+          
+          # Treo máy 6 tiếng
           sleep 21600
