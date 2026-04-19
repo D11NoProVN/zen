@@ -30,6 +30,7 @@ let filteredLines = 0;
 const results = [];
 const perKeyword = {};
 const domainCount = {};
+const lineDomains = [];
 const seenSet = dedup ? new Set() : null;
 
 keywordList.forEach(kw => perKeyword[kw] = []);
@@ -135,6 +136,7 @@ rl.on('line', (line) => {
 
         // Extract domain
         const domain = extractDomain(line);
+        lineDomains.push(domain || null);
         if (domain) {
             domainCount[domain] = (domainCount[domain] || 0) + 1;
         }
@@ -147,6 +149,7 @@ rl.on('line', (line) => {
             total: totalLines,
             filtered: filteredLines,
             lines: results.splice(0), // Send and clear
+            lineDomains: lineDomains.splice(0),
             perKeyword: cloneAndClear(perKeyword),
             domainCount: { ...domainCount }
         });
@@ -160,6 +163,7 @@ rl.on('close', () => {
         total: totalLines,
         filtered: filteredLines,
         lines: results,
+        lineDomains,
         perKeyword,
         domainCount
     });

@@ -4,8 +4,11 @@ const assert = require('node:assert/strict');
 const {
     createAggregationState,
     applyWorkerProgress,
+    dedupeAggregatedResults,
+    mapKeywordPayloadToClientKeywords,
     finalizeAggregatedTotals,
     toTopDomains,
+    rebuildDomainCountFromLineDomains,
     rebuildDomainCountFromLines
 } = require('./scan-fast-worker-aggregation');
 
@@ -141,4 +144,47 @@ test('rebuildDomainCountFromLines should produce domain counts from deduped line
         ['bidaithanroblox.com', 2],
         ['example.com', 1]
     ]);
+});
+
+test('deduped strip-url aggregation should preserve original URL domains instead of domains inside credentials', () => {
+    const state = createInitialState();
+
+    applyWorkerProgress(state, 0, {
+        total: 2,
+        filtered: 2,
+        lines: ['gmail.com:pass123', 'gmail.com:pass123'],
+        lineDomains: ['bidaithanroblox.com', 'bidaithanroblox.com'],
+        perKeyword: {
+            'bidaithanroblox.com': ['gmail.com:pass123', 'gmail.com:pass123']
+        },
+        domainCount: {
+            'bidaithanroblox.com': 2
+        }
+    });
+
+    dedupeAggregatedResults(state, ['bidaithanroblox.com']);
+    finalizeAggregatedTotals(state);
+    state.domainCount = rebuildDomainCountFromLineDomains(state.lineDomains);
+
+    assert.deepEqual(state.lines, ['gmail.com:pass123']);
+    assert.deepEqual(state.perKeyword['bidaithanroblox.com'], ['gmail.com:pass123']);
+    assert.deepEqual(toTopDomains(state, 10), [['bidaithanroblox.com', 1]]);
+});
+
+test('mapKeywordPayloadToClientKeywords should remap normalized strip-url keys back to original client keywords', () => {
+    const payload = mapKeywordPayloadToClientKeywords({
+        perKeyword: {
+            'bidaithanroblox.com': ['u1:p1', 'u2:p2']
+        },
+        perKeywordCounts: {
+            'bidaithanroblox.com': 2
+        }
+    }, ['https://bidaithanroblox.com/'], true);
+
+    assert.deepEqual(payload.perKeyword, {
+        'https://bidaithanroblox.com/': ['u1:p1', 'u2:p2']
+    });
+    assert.deepEqual(payload.perKeywordCounts, {
+        'https://bidaithanroblox.com/': 2
+    });
 });

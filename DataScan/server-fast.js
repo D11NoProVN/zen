@@ -12,10 +12,18 @@ const {
 const {
     createAggregationState,
     applyWorkerProgress,
-    rebuildDomainCountFromLines,
+    dedupeAggregatedResults,
+    mapKeywordPayloadToClientKeywords,
+    rebuildDomainCountFromLineDomains,
     finalizeAggregatedTotals,
     toTopDomains
 } = require('./scan-fast-worker-aggregation');
+const {
+    InvalidRequestError,
+    normalizeScanPayload,
+    parseKeywordsQueryParam,
+    resolveDownloadFilePath
+} = require('./scan-request-utils');
 const app = express();
 
 const PORT = 8080;
@@ -280,10 +288,27 @@ app.post('/api/download-stream', async (req, res) => {
     }
 });
 
+// API: File content for legacy UI downloads loader
+app.get('/api/files/:filename/content', (req, res) => {
+    try {
+        const filepath = resolveDownloadFilePath(DOWNLOAD_DIR, req.params.filename);
+        if (!fs.existsSync(filepath)) {
+            return res.status(404).json({ success: false, error: 'File not found' });
+        }
+
+        res.sendFile(filepath);
+    } catch (err) {
+        if (err instanceof InvalidRequestError) {
+            return res.status(400).json({ success: false, error: err.message });
+        }
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
 // API: Delete file
 app.delete('/api/files/:filename', (req, res) => {
     try {
-        const filepath = path.join(DOWNLOAD_DIR, req.params.filename);
+        const filepath = resolveDownloadFilePath(DOWNLOAD_DIR, req.params.filename);
         if (fs.existsSync(filepath)) {
             fs.unlinkSync(filepath);
             res.json({ success: true });
@@ -291,19 +316,27 @@ app.delete('/api/files/:filename', (req, res) => {
             res.status(404).json({ success: false, error: 'File not found' });
         }
     } catch (err) {
+        if (err instanceof InvalidRequestError) {
+            return res.status(400).json({ success: false, error: err.message });
+        }
         res.status(500).json({ success: false, error: err.message });
     }
 });
 
 // API: Ultra-fast scan with Worker Threads
 app.post('/api/scan-fast', async (req, res) => {
-    const { filename, keywords, excludeKeywords, stripUrl, dedup } = req.body;
-
-    if (!filename) {
-        return res.status(400).json({ success: false, error: 'Filename is required' });
+    let normalized;
+    try {
+        normalized = normalizeScanPayload(req.body || {});
+    } catch (err) {
+        if (err instanceof InvalidRequestError) {
+            return res.status(400).json({ success: false, error: err.message });
+        }
+        return res.status(500).json({ success: false, error: err.message });
     }
 
-    const filepath = path.join(DOWNLOAD_DIR, filename);
+    const { filename, excludeKeywords, stripUrl, dedup } = normalized;
+    const filepath = resolveDownloadFilePath(DOWNLOAD_DIR, filename);
 
     if (!fs.existsSync(filepath)) {
         return res.status(404).json({ success: false, error: 'File not found' });
@@ -318,10 +351,9 @@ app.post('/api/scan-fast', async (req, res) => {
     const chunkSize = Math.ceil(fileSize / NUM_WORKERS);
 
     // Split file into chunks for parallel processing
-    const normalizedKeywords = stripUrl
-        ? keywords.map(kw => stripUrlFromKeyword(kw)).filter(Boolean)
-        : keywords;
+    const normalizedKeywords = normalized.normalizedKeywords;
 
+    const clientKeywords = normalized.clientKeywords;
     const workers = [];
     const results = createAggregationState(normalizedKeywords);
 
@@ -359,44 +391,27 @@ app.post('/api/scan-fast', async (req, res) => {
                 completedWorkers++;
 
                 if (completedWorkers === NUM_WORKERS) {
-                    // All workers done - apply global dedup if needed
                     if (dedup) {
-                        const seen = new Set();
-                        results.lines = results.lines.filter(line => {
-                            if (seen.has(line)) return false;
-                            seen.add(line);
-                            return true;
-                        });
-
-                        // Dedup per-keyword
-                        for (const kw of normalizedKeywords) {
-                            const kwSeen = new Set();
-                            results.perKeyword[kw] = (results.perKeyword[kw] || []).filter(line => {
-                                if (kwSeen.has(line)) return false;
-                                kwSeen.add(line);
-                                return true;
-                            });
-                        }
+                        dedupeAggregatedResults(results, normalizedKeywords);
+                        results.domainCount = rebuildDomainCountFromLineDomains(results.lineDomains);
                     }
 
                     finalizeAggregatedTotals(results);
 
-                    if (dedup) {
-                        results.domainCount = rebuildDomainCountFromLines(results.lines);
-                    }
-
-                    // Send final unsent delta only
                     const topDomains = toTopDomains(results, 10);
-
                     const delta = buildDeltaPayload(results, deltaTracker);
+                    const clientKeywordPayload = mapKeywordPayloadToClientKeywords({
+                        perKeyword: delta.perKeyword,
+                        perKeywordCounts: results.perKeywordCounts
+                    }, clientKeywords, Boolean(stripUrl));
 
                     res.write(`data: ${JSON.stringify({
                         type: 'complete',
                         total: results.total,
                         filtered: results.filtered,
                         results: delta.results,
-                        perKeyword: delta.perKeyword,
-                        perKeywordCounts: results.perKeywordCounts,
+                        perKeyword: clientKeywordPayload.perKeyword,
+                        perKeywordCounts: clientKeywordPayload.perKeywordCounts,
                         topDomains,
                         preview: results.lines.slice(-20)
                     })}\n\n`);
@@ -416,16 +431,19 @@ app.post('/api/scan-fast', async (req, res) => {
 
     function sendUpdate() {
         const topDomains = toTopDomains(results, 10);
-
         const delta = buildDeltaPayload(results, deltaTracker);
+        const clientKeywordPayload = mapKeywordPayloadToClientKeywords({
+            perKeyword: delta.perKeyword,
+            perKeywordCounts: results.perKeywordCounts
+        }, clientKeywords, Boolean(stripUrl));
 
         res.write(`data: ${JSON.stringify({
             type: 'progress',
             total: results.total,
             filtered: results.filtered,
             results: delta.results,
-            perKeyword: delta.perKeyword,
-            perKeywordCounts: results.perKeywordCounts,
+            perKeyword: clientKeywordPayload.perKeyword,
+            perKeywordCounts: clientKeywordPayload.perKeywordCounts,
             topDomains,
             preview: results.lines.slice(-20)
         })}\n\n`);
@@ -439,13 +457,24 @@ app.post('/api/scan-fast', async (req, res) => {
 
 // API: GET version for EventSource (SSE)
 app.get('/api/scan-fast', async (req, res) => {
-    const { filename, keywords, excludeKeywords, stripUrl, dedup } = req.query;
-
-    if (!filename) {
-        return res.status(400).json({ success: false, error: 'Filename is required' });
+    let normalized;
+    try {
+        normalized = normalizeScanPayload({
+            filename: req.query.filename,
+            keywords: parseKeywordsQueryParam(req.query.keywords),
+            excludeKeywords: req.query.excludeKeywords || '',
+            stripUrl: req.query.stripUrl,
+            dedup: req.query.dedup
+        });
+    } catch (err) {
+        if (err instanceof InvalidRequestError) {
+            return res.status(400).json({ success: false, error: err.message });
+        }
+        return res.status(500).json({ success: false, error: err.message });
     }
 
-    const filepath = path.join(DOWNLOAD_DIR, filename);
+    const { filename, clientKeywords, normalizedKeywords: normalizedKeywordList, excludeKeywords, stripUrl, dedup } = normalized;
+    const filepath = resolveDownloadFilePath(DOWNLOAD_DIR, filename);
 
     if (!fs.existsSync(filepath)) {
         return res.status(404).json({ success: false, error: 'File not found' });
@@ -455,11 +484,6 @@ app.get('/api/scan-fast', async (req, res) => {
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
-
-    const keywordList = JSON.parse(keywords || '[]');
-    const normalizedKeywordList = stripUrl === 'true'
-        ? keywordList.map(kw => stripUrlFromKeyword(kw)).filter(Boolean)
-        : keywordList;
     const fileSize = fs.statSync(filepath).size;
     const chunkSize = Math.ceil(fileSize / NUM_WORKERS);
 
@@ -501,40 +525,26 @@ app.get('/api/scan-fast', async (req, res) => {
 
                 if (completedWorkers === NUM_WORKERS) {
                     if (dedup === 'true') {
-                        const seen = new Set();
-                        results.lines = results.lines.filter(line => {
-                            if (seen.has(line)) return false;
-                            seen.add(line);
-                            return true;
-                        });
-
-                        for (const kw of normalizedKeywordList) {
-                            const kwSeen = new Set();
-                            results.perKeyword[kw] = (results.perKeyword[kw] || []).filter(line => {
-                                if (kwSeen.has(line)) return false;
-                                kwSeen.add(line);
-                                return true;
-                            });
-                        }
+                        dedupeAggregatedResults(results, normalizedKeywordList);
+                        results.domainCount = rebuildDomainCountFromLineDomains(results.lineDomains);
                     }
 
                     finalizeAggregatedTotals(results);
 
-                    if (dedup === 'true') {
-                        results.domainCount = rebuildDomainCountFromLines(results.lines);
-                    }
-
                     const topDomains = toTopDomains(results, 10);
-
                     const delta = buildDeltaPayload(results, deltaTracker);
+                    const clientKeywordPayload = mapKeywordPayloadToClientKeywords({
+                        perKeyword: delta.perKeyword,
+                        perKeywordCounts: results.perKeywordCounts
+                    }, clientKeywords, stripUrl === 'true');
 
                     res.write(`data: ${JSON.stringify({
                         type: 'complete',
                         total: results.total,
                         filtered: results.filtered,
                         results: delta.results,
-                        perKeyword: delta.perKeyword,
-                        perKeywordCounts: results.perKeywordCounts,
+                        perKeyword: clientKeywordPayload.perKeyword,
+                        perKeywordCounts: clientKeywordPayload.perKeywordCounts,
                         topDomains,
                         preview: results.lines.slice(-20)
                     })}\n\n`);
@@ -554,16 +564,19 @@ app.get('/api/scan-fast', async (req, res) => {
 
     function sendUpdate() {
         const topDomains = toTopDomains(results, 10);
-
         const delta = buildDeltaPayload(results, deltaTracker);
+        const clientKeywordPayload = mapKeywordPayloadToClientKeywords({
+            perKeyword: delta.perKeyword,
+            perKeywordCounts: results.perKeywordCounts
+        }, clientKeywords, stripUrl === 'true');
 
         res.write(`data: ${JSON.stringify({
             type: 'progress',
             total: results.total,
             filtered: results.filtered,
             results: delta.results,
-            perKeyword: delta.perKeyword,
-            perKeywordCounts: results.perKeywordCounts,
+            perKeyword: clientKeywordPayload.perKeyword,
+            perKeywordCounts: clientKeywordPayload.perKeywordCounts,
             topDomains,
             preview: results.lines.slice(-20)
         })}\n\n`);

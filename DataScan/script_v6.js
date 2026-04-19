@@ -228,11 +228,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // ─── Parse Keywords ───
     function parseKeywords() {
+        const stripUrl = el.stripUrl.checked;
         return el.keyword.value
             .split('\n')
             .map(k => k.trim())
-            .map(k => stripUrlFromKeyword(k))
-            .filter(k => k.length > 0);
+            .filter(k => k.length > 0)
+            .map(k => stripUrl ? stripUrlFromKeyword(k) : k.toLowerCase());
     }
 
     function stripUrlFromKeyword(kw) {

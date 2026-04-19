@@ -11,6 +11,7 @@ function createAggregationState(keywordKeys = []) {
         total: 0,
         filtered: 0,
         lines: [],
+        lineDomains: [],
         perKeyword,
         perKeywordCounts,
         domainCount: new Map(),
@@ -55,8 +56,15 @@ function applyWorkerProgress(state, workerId, msg) {
     snapshot.filtered = typeof msg.filtered === 'number' ? msg.filtered : snapshot.filtered;
 
     const lines = Array.isArray(msg.lines) ? msg.lines : [];
+    const lineDomains = Array.isArray(msg.lineDomains) ? msg.lineDomains : [];
     if (lines.length > 0) {
         state.lines.push(...lines);
+
+        if (lineDomains.length === lines.length) {
+            state.lineDomains.push(...lineDomains);
+        } else {
+            state.lineDomains.push(...new Array(lines.length).fill(null));
+        }
     }
 
     const perKeyword = msg.perKeyword && typeof msg.perKeyword === 'object' ? msg.perKeyword : {};
@@ -110,6 +118,81 @@ function rebuildDomainCountFromLines(lines) {
     return rebuiltDomainCount;
 }
 
+function rebuildDomainCountFromLineDomains(lineDomains) {
+    const rebuiltDomainCount = new Map();
+    const safeLineDomains = Array.isArray(lineDomains) ? lineDomains : [];
+
+    for (const domainRaw of safeLineDomains) {
+        const domain = typeof domainRaw === 'string' ? domainRaw.toLowerCase() : null;
+        if (domain) {
+            rebuiltDomainCount.set(domain, (rebuiltDomainCount.get(domain) || 0) + 1);
+        }
+    }
+
+    return rebuiltDomainCount;
+}
+
+function dedupeAggregatedResults(state, keywordKeys = []) {
+    const seen = new Set();
+    const dedupedLines = [];
+    const dedupedLineDomains = [];
+
+    for (let i = 0; i < state.lines.length; i++) {
+        const line = state.lines[i];
+        if (seen.has(line)) continue;
+        seen.add(line);
+        dedupedLines.push(line);
+        dedupedLineDomains.push(state.lineDomains[i] || null);
+    }
+
+    state.lines = dedupedLines;
+    state.lineDomains = dedupedLineDomains;
+
+    for (const kw of keywordKeys) {
+        const kwSeen = new Set();
+        state.perKeyword[kw] = (state.perKeyword[kw] || []).filter(line => {
+            if (kwSeen.has(line)) return false;
+            kwSeen.add(line);
+            return true;
+        });
+    }
+}
+
+function stripUrlFromKeyword(kw) {
+    return kw
+        .trim()
+        .replace(/^https?:\/\//i, '')
+        .replace(/^\/\//, '')
+        .replace(/\/+$/, '')
+        .toLowerCase();
+}
+
+function mapKeywordPayloadToClientKeywords(payload, clientKeywords, stripUrl) {
+    if (!stripUrl) {
+        return {
+            perKeyword: payload.perKeyword || {},
+            perKeywordCounts: payload.perKeywordCounts || {}
+        };
+    }
+
+    const remappedKeywordResults = {};
+    const remappedKeywordCounts = {};
+    const safePerKeyword = payload.perKeyword && typeof payload.perKeyword === 'object' ? payload.perKeyword : {};
+    const safePerKeywordCounts = payload.perKeywordCounts && typeof payload.perKeywordCounts === 'object' ? payload.perKeywordCounts : {};
+    const safeClientKeywords = Array.isArray(clientKeywords) ? clientKeywords : [];
+
+    for (const clientKeyword of safeClientKeywords) {
+        const normalizedKeyword = stripUrlFromKeyword(clientKeyword);
+        remappedKeywordResults[clientKeyword] = safePerKeyword[normalizedKeyword] || [];
+        remappedKeywordCounts[clientKeyword] = safePerKeywordCounts[normalizedKeyword] || 0;
+    }
+
+    return {
+        perKeyword: remappedKeywordResults,
+        perKeywordCounts: remappedKeywordCounts
+    };
+}
+
 function finalizeAggregatedTotals(state) {
     state.filtered = state.lines.length;
 
@@ -127,6 +210,9 @@ function toTopDomains(state, limit = 10) {
 module.exports = {
     createAggregationState,
     applyWorkerProgress,
+    dedupeAggregatedResults,
+    mapKeywordPayloadToClientKeywords,
+    rebuildDomainCountFromLineDomains,
     rebuildDomainCountFromLines,
     finalizeAggregatedTotals,
     toTopDomains

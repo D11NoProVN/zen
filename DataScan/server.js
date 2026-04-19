@@ -5,6 +5,11 @@ const fs = require('fs');
 const path = require('path');
 const { createReadStream } = require('fs');
 const { createInterface } = require('readline');
+const {
+    InvalidRequestError,
+    normalizeScanPayload,
+    resolveDownloadFilePath
+} = require('./scan-request-utils');
 const app = express();
 
 const PORT = 8080;
@@ -91,10 +96,27 @@ app.post('/api/download', async (req, res) => {
     }
 });
 
+// API: File content for legacy UI downloads loader
+app.get('/api/files/:filename/content', (req, res) => {
+    try {
+        const filepath = resolveDownloadFilePath(DOWNLOAD_DIR, req.params.filename);
+        if (!fs.existsSync(filepath)) {
+            return res.status(404).json({ success: false, error: 'File not found' });
+        }
+
+        res.sendFile(filepath);
+    } catch (err) {
+        if (err instanceof InvalidRequestError) {
+            return res.status(400).json({ success: false, error: err.message });
+        }
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
 // API: Delete file
 app.delete('/api/files/:filename', (req, res) => {
     try {
-        const filepath = path.join(DOWNLOAD_DIR, req.params.filename);
+        const filepath = resolveDownloadFilePath(DOWNLOAD_DIR, req.params.filename);
         if (fs.existsSync(filepath)) {
             fs.unlinkSync(filepath);
             res.json({ success: true });
@@ -102,19 +124,27 @@ app.delete('/api/files/:filename', (req, res) => {
             res.status(404).json({ success: false, error: 'File not found' });
         }
     } catch (err) {
+        if (err instanceof InvalidRequestError) {
+            return res.status(400).json({ success: false, error: err.message });
+        }
         res.status(500).json({ success: false, error: err.message });
     }
 });
 
 // API: Stream scan file (optimized for large files)
 app.post('/api/scan-stream', async (req, res) => {
-    const { filename, keywords, excludeKeywords, stripUrl, dedup } = req.body;
-
-    if (!filename) {
-        return res.status(400).json({ success: false, error: 'Filename is required' });
+    let normalized;
+    try {
+        normalized = normalizeScanPayload(req.body || {});
+    } catch (err) {
+        if (err instanceof InvalidRequestError) {
+            return res.status(400).json({ success: false, error: err.message });
+        }
+        return res.status(500).json({ success: false, error: err.message });
     }
 
-    const filepath = path.join(DOWNLOAD_DIR, filename);
+    const { filename, clientKeywords, normalizedKeywords, excludeList, stripUrl, dedup } = normalized;
+    const filepath = resolveDownloadFilePath(DOWNLOAD_DIR, filename);
 
     if (!fs.existsSync(filepath)) {
         return res.status(404).json({ success: false, error: 'File not found' });
@@ -125,16 +155,13 @@ app.post('/api/scan-stream', async (req, res) => {
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
 
-    const keywordList = keywords
-        .map(k => stripUrl ? stripUrlFromKeyword(k) : k.toLowerCase())
-        .filter(Boolean);
+    const keywordList = normalizedKeywords;
 
-    const excludeList = excludeKeywords
-        ? excludeKeywords
-            .split(',')
-            .map(k => stripUrl ? stripUrlFromKeyword(k) : k.trim().toLowerCase())
-            .filter(Boolean)
-        : [];
+    const clientKeywordMap = new Map();
+    for (let i = 0; i < clientKeywords.length; i++) {
+        clientKeywordMap.set(keywordList[i] || clientKeywords[i], clientKeywords[i]);
+    }
+
     const seen = dedup ? new Set() : null;
     const domainCount = new Map();
     const perKeywordCounts = {};
@@ -221,12 +248,17 @@ app.post('/api/scan-stream', async (req, res) => {
             sendChunk();
         }
 
+        const remappedCounts = {};
+        for (const [kw, count] of Object.entries(perKeywordCounts)) {
+            remappedCounts[clientKeywordMap.get(kw) || kw] = count;
+        }
+
         // Send complete
         res.write(`data: ${JSON.stringify({
             type: 'complete',
             total: totalLines,
             filtered: filteredLines,
-            perKeywordCounts
+            perKeywordCounts: remappedCounts
         })}\n\n`);
         res.end();
     });
@@ -244,8 +276,13 @@ app.post('/api/scan-stream', async (req, res) => {
         const perKeyword = {};
         for (const [kw, lines] of Object.entries(perKeywordBuffer)) {
             if (lines.length > 0) {
-                perKeyword[kw] = lines.splice(0);
+                perKeyword[clientKeywordMap.get(kw) || kw] = lines.splice(0);
             }
+        }
+
+        const remappedCounts = {};
+        for (const [kw, count] of Object.entries(perKeywordCounts)) {
+            remappedCounts[clientKeywordMap.get(kw) || kw] = count;
         }
 
         res.write(`data: ${JSON.stringify({
@@ -254,7 +291,7 @@ app.post('/api/scan-stream', async (req, res) => {
             filtered: filteredLines,
             results: buffer.join('\n'),
             perKeyword,
-            perKeywordCounts,
+            perKeywordCounts: remappedCounts,
             topDomains,
             preview: buffer.slice(-20)
         })}\n\n`);

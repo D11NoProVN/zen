@@ -1,5 +1,7 @@
 // ZenScan v1.0 — Blob Engine Worker
 // Supports: multi-file processing, per-keyword result tracking
+importScripts('worker-v6-utils.js');
+
 let isProcessing = false;
 
 self.onmessage = async function (e) {
@@ -16,13 +18,12 @@ self.onmessage = async function (e) {
     const domainStats = new Map();
     const seenSet = new Set();
 
-    // Parse keywords — already an array from main thread
     const kwList = Array.isArray(keywords)
-        ? keywords.map(k => k.trim().toLowerCase()).filter(k => k)
-        : keywords.split(',').map(k => k.trim().toLowerCase()).filter(k => k);
+        ? keywords.map(k => String(k).trim().toLowerCase()).filter(Boolean)
+        : [];
 
-    const exList = excludeKeywords
-        ? excludeKeywords.split(',').map(k => k.trim().toLowerCase()).filter(k => k)
+    const exList = typeof excludeKeywords === 'string'
+        ? excludeKeywords.split(',').map(k => k.trim().toLowerCase()).filter(Boolean)
         : [];
 
     // Per-keyword tracking
@@ -56,80 +57,32 @@ self.onmessage = async function (e) {
                     const line = lines[i];
                     if (!line || line.length < 3) continue;
 
-                    // Extract the first block of text before any whitespace or pipe separator
-                    let cleanLine = line.trim().split(/[\s|]+/)[0];
+                    const cleanLine = line.trim().split(/[\s|]+/)[0];
                     if (!cleanLine.includes(':')) continue;
-
-                    const parts = cleanLine.split(':');
-                    if (parts.length < 2) continue;
 
                     totalLines++;
 
-                    // Robust URL Detection
-                    let urlPart = '';
-                    let userPassPart = '';
+                    const processed = processLegacyScanLine({
+                        line: cleanLine,
+                        keywords: kwList,
+                        excludeKeywords: exList,
+                        stripUrl,
+                        dedup,
+                        seenSet
+                    });
+                    if (!processed) continue;
 
-                    // For format: http(s)://domain.com:user:pass or domain.com:user:pass
-                    if (cleanLine.toLowerCase().startsWith('http')) {
-                        // If it has http:// or https://, the URL part is everything up to the last 2 colons
-                        // Example: https://www.roblox.com/:Shadowprincesslusi:bombon12#
-                        // Parts: ["https", "//www.roblox.com/", "Shadowprincesslusi", "bombon12#"]
-                        urlPart = parts.slice(0, parts.length - 2).join(':');
-                        userPassPart = parts.slice(-2).join(':');
-                    } else {
-                        // Standard user:pass or domain:user:pass
-                        if (parts.length === 2) {
-                            urlPart = parts[0]; 
-                            userPassPart = cleanLine; // no separate domain if only user:pass
-                        } else {
-                            urlPart = parts.slice(0, parts.length - 2).join(':');
-                            userPassPart = parts.slice(-2).join(':');
-                        }
+                    const { matchedKeyword, outputLine, domain } = processed;
+
+                    perKeywordBatch[matchedKeyword].push(outputLine);
+                    perKeywordCounts[matchedKeyword]++;
+                    filteredLines++;
+
+                    if (domain) {
+                        domainStats.set(domain, (domainStats.get(domain) || 0) + 1);
                     }
 
-                    const urlPartLower = urlPart.toLowerCase();
-
-                    // Check exclusions first
-                    const isExcluding = exList.some(ex => urlPartLower.includes(ex));
-                    if (isExcluding) continue;
-
-                    // Match each keyword
-                    let matchedAny = false;
-                    for (const kw of kwList) {
-                        if (urlPartLower.includes(kw)) {
-                            matchedAny = true;
-
-                            let outputLine = stripUrl ? userPassPart : cleanLine;
-
-                            // Dedup check (global)
-                            if (dedup) {
-                                if (seenSet.has(outputLine)) continue;
-                                seenSet.add(outputLine);
-                                if (seenSet.size > 5000000) seenSet.clear();
-                            }
-
-                            perKeywordBatch[kw].push(outputLine);
-                            perKeywordCounts[kw]++;
-                            filteredLines++;
-
-                            // Domain Analytics
-                            let domain = 'other';
-                            try {
-                                const domainMatch = urlPart.match(
-                                    /(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9][a-z0-9-]{0,61}[a-z0-9]/
-                                );
-                                if (domainMatch) {
-                                    const fullD = domainMatch[0];
-                                    const dParts = fullD.split('.');
-                                    domain = dParts.length > 2 ? dParts.slice(-2).join('.') : fullD;
-                                }
-                            } catch (e) {}
-                            domainStats.set(domain, (domainStats.get(domain) || 0) + 1);
-
-                            foundLinesBatch.push(outputLine);
-                            break; // One keyword match is enough per line
-                        }
-                    }
+                    foundLinesBatch.push(outputLine);
 
                     // Batch send
                     if (foundLinesBatch.length >= 10000 || (Date.now() - lastUpdate > 300)) {
@@ -147,9 +100,33 @@ self.onmessage = async function (e) {
                 }
             }
 
-            // Handle partial line for this file
             if (partialLine.trim()) {
-                totalLines++;
+                const cleanLine = partialLine.trim().split(/[\s|]+/)[0];
+                if (cleanLine.includes(':')) {
+                    totalLines++;
+
+                    const processed = processLegacyScanLine({
+                        line: cleanLine,
+                        keywords: kwList,
+                        excludeKeywords: exList,
+                        stripUrl,
+                        dedup,
+                        seenSet
+                    });
+
+                    if (processed) {
+                        const { matchedKeyword, outputLine, domain } = processed;
+                        perKeywordBatch[matchedKeyword].push(outputLine);
+                        perKeywordCounts[matchedKeyword]++;
+                        filteredLines++;
+
+                        if (domain) {
+                            domainStats.set(domain, (domainStats.get(domain) || 0) + 1);
+                        }
+
+                        foundLinesBatch.push(outputLine);
+                    }
+                }
             }
         }
 
