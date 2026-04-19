@@ -5,6 +5,10 @@ const fs = require('fs');
 const path = require('path');
 const { Worker } = require('worker_threads');
 const os = require('os');
+const {
+    createDeltaTracker,
+    buildDeltaPayload
+} = require('./scan-fast-stream-delta');
 const app = express();
 
 const PORT = 8080;
@@ -328,6 +332,7 @@ app.post('/api/scan-fast', async (req, res) => {
 
     let completedWorkers = 0;
     let lastUpdate = Date.now();
+    const deltaTracker = createDeltaTracker(normalizedKeywords);
 
     for (let i = 0; i < NUM_WORKERS; i++) {
         const start = i * chunkSize;
@@ -400,22 +405,19 @@ app.post('/api/scan-fast', async (req, res) => {
                         results.perKeywordCounts[kw] = lines.length;
                     }
 
-                    // Send final result
+                    // Send final unsent delta only
                     const topDomains = Array.from(results.domainCount.entries())
                         .sort((a, b) => b[1] - a[1])
                         .slice(0, 10);
 
-                    const perKeyword = {};
-                    for (const [kw, lines] of Object.entries(results.perKeyword)) {
-                        perKeyword[kw] = lines;
-                    }
+                    const delta = buildDeltaPayload(results, deltaTracker);
 
                     res.write(`data: ${JSON.stringify({
                         type: 'complete',
                         total: results.total,
                         filtered: results.filtered,
-                        results: results.lines.join('\n'),
-                        perKeyword,
+                        results: delta.results,
+                        perKeyword: delta.perKeyword,
                         perKeywordCounts: results.perKeywordCounts,
                         topDomains,
                         preview: results.lines.slice(-20)
@@ -439,19 +441,14 @@ app.post('/api/scan-fast', async (req, res) => {
             .sort((a, b) => b[1] - a[1])
             .slice(0, 10);
 
-        const perKeyword = {};
-        for (const [kw, lines] of Object.entries(results.perKeyword)) {
-            if (lines.length > 0) {
-                perKeyword[kw] = lines.slice(-100); // Send last 100 lines per keyword
-            }
-        }
+        const delta = buildDeltaPayload(results, deltaTracker);
 
         res.write(`data: ${JSON.stringify({
             type: 'progress',
             total: results.total,
             filtered: results.filtered,
-            results: results.lines.slice(-1000).join('\n'), // Send last 1000 lines
-            perKeyword,
+            results: delta.results,
+            perKeyword: delta.perKeyword,
             perKeywordCounts: results.perKeywordCounts,
             topDomains,
             preview: results.lines.slice(-20)
@@ -508,6 +505,7 @@ app.get('/api/scan-fast', async (req, res) => {
 
     let completedWorkers = 0;
     let lastUpdate = Date.now();
+    const deltaTracker = createDeltaTracker(normalizedKeywordList);
 
     for (let i = 0; i < NUM_WORKERS; i++) {
         const start = i * chunkSize;
@@ -582,17 +580,14 @@ app.get('/api/scan-fast', async (req, res) => {
                         .sort((a, b) => b[1] - a[1])
                         .slice(0, 10);
 
-                    const perKeyword = {};
-                    for (const [kw, lines] of Object.entries(results.perKeyword)) {
-                        perKeyword[kw] = lines;
-                    }
+                    const delta = buildDeltaPayload(results, deltaTracker);
 
                     res.write(`data: ${JSON.stringify({
                         type: 'complete',
                         total: results.total,
                         filtered: results.filtered,
-                        results: results.lines.join('\n'),
-                        perKeyword,
+                        results: delta.results,
+                        perKeyword: delta.perKeyword,
                         perKeywordCounts: results.perKeywordCounts,
                         topDomains,
                         preview: results.lines.slice(-20)
@@ -616,19 +611,14 @@ app.get('/api/scan-fast', async (req, res) => {
             .sort((a, b) => b[1] - a[1])
             .slice(0, 10);
 
-        const perKeyword = {};
-        for (const [kw, lines] of Object.entries(results.perKeyword)) {
-            if (lines.length > 0) {
-                perKeyword[kw] = lines.slice(-100);
-            }
-        }
+        const delta = buildDeltaPayload(results, deltaTracker);
 
         res.write(`data: ${JSON.stringify({
             type: 'progress',
             total: results.total,
             filtered: results.filtered,
-            results: results.lines.slice(-1000).join('\n'),
-            perKeyword,
+            results: delta.results,
+            perKeyword: delta.perKeyword,
             perKeywordCounts: results.perKeywordCounts,
             topDomains,
             preview: results.lines.slice(-20)
