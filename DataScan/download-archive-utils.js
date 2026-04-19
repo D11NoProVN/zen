@@ -1,11 +1,13 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const unzipper = require('unzipper');
-const { createExtractorFromData } = require('node-unrar-js');
+const { createExtractorFromFile } = require('node-unrar-js');
 const {
     ensureDownloadBasename,
     getUniqueDownloadFilename
 } = require('./scan-request-utils');
+
+const { pipeline } = require('node:stream/promises');
 
 class ArchiveExtractionError extends Error {}
 
@@ -74,8 +76,9 @@ async function extractZipArchive({ archivePath, downloadDir }) {
 
             const safeName = ensureDownloadBasename(parsed.base);
             const target = getUniqueDownloadFilename(downloadDir, safeName);
-            const content = await entry.buffer();
-            fs.writeFileSync(target.filepath, content);
+            const writer = fs.createWriteStream(target.filepath);
+            const stream = entry.stream();
+            await pipeline(stream, writer);
             createdFiles.push(target);
         }
 
@@ -91,21 +94,24 @@ async function extractRarArchive({ archivePath, downloadDir }) {
     const createdFiles = [];
 
     try {
-        const data = Uint8Array.from(fs.readFileSync(archivePath)).buffer;
-        const extractor = await createExtractorFromData({ data });
+        const extractor = await createExtractorFromFile({
+            filepath: archivePath,
+            targetPath: downloadDir,
+            filenameTransform: (originalFilename) => {
+                const safeName = ensureDownloadBasename(path.basename(originalFilename));
+                const target = getUniqueDownloadFilename(downloadDir, safeName);
+                createdFiles.push(target);
+                return path.basename(target.filepath);
+            }
+        });
+
         const extracted = extractor.extract({
             files: (fileHeader) => !fileHeader.flags.directory && path.extname(fileHeader.name).toLowerCase() === '.txt'
         });
 
-        for (const file of extracted.files) {
-            if (!file.extraction) {
-                continue;
-            }
-
-            const safeName = ensureDownloadBasename(path.basename(file.fileHeader.name));
-            const target = getUniqueDownloadFilename(downloadDir, safeName);
-            fs.writeFileSync(target.filepath, Buffer.from(file.extraction));
-            createdFiles.push(target);
+        // Iterate over the generator to trigger extraction
+        for (const _ of extracted.files) {
+            // Extraction happens directly to disk via targetPath
         }
 
         return finalizeExtraction({ archivePath, archiveType: 'rar', createdFiles });

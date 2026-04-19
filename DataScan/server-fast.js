@@ -267,7 +267,6 @@ app.post('/api/download', async (req, res) => {
             method: 'GET',
             url: url,
             responseType: 'stream',
-            timeout: 120000,
             maxContentLength: Infinity,
             maxBodyLength: Infinity,
         });
@@ -324,7 +323,6 @@ app.post('/api/download-stream', async (req, res) => {
             method: 'GET',
             url: url,
             responseType: 'stream',
-            timeout: 120000,
             maxContentLength: Infinity,
             maxBodyLength: Infinity,
         });
