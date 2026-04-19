@@ -1,3 +1,4 @@
+const fs = require('fs');
 const path = require('path');
 
 class InvalidRequestError extends Error {}
@@ -29,21 +30,48 @@ function normalizeStringList(value, { stripUrl = false } = {}) {
     }).filter(Boolean);
 }
 
-function parseKeywordsQueryParam(rawKeywords) {
-    if (rawKeywords == null || rawKeywords === '') return [];
+function parseJsonArrayQueryParam(rawValue, label) {
+    if (rawValue == null || rawValue === '') return [];
 
     let parsed;
     try {
-        parsed = JSON.parse(rawKeywords);
+        parsed = JSON.parse(rawValue);
     } catch {
-        throw new InvalidRequestError('Invalid keywords query JSON');
+        throw new InvalidRequestError(`Invalid ${label} query JSON`);
     }
 
     if (!Array.isArray(parsed)) {
-        throw new InvalidRequestError('Keywords must be an array');
+        throw new InvalidRequestError(`${label[0].toUpperCase() + label.slice(1)} must be an array`);
     }
 
     return parsed;
+}
+
+function parseKeywordsQueryParam(rawKeywords) {
+    return parseJsonArrayQueryParam(rawKeywords, 'keywords');
+}
+
+function parseFilenamesQueryParam(rawFilenames) {
+    return parseJsonArrayQueryParam(rawFilenames, 'filenames');
+}
+
+function getUniqueUploadFilename(downloadDir, filename) {
+    const safeFilename = ensureTxtBasename(filename);
+    const parsed = path.parse(safeFilename);
+    let candidate = safeFilename;
+    let attempt = 1;
+    let targetPath = resolveDownloadFilePath(downloadDir, candidate);
+
+    while (fs.existsSync(targetPath)) {
+        candidate = `${parsed.name} (${attempt})${parsed.ext}`;
+        targetPath = resolveDownloadFilePath(downloadDir, candidate);
+        attempt++;
+    }
+
+    return {
+        filename: candidate,
+        filepath: targetPath
+    };
 }
 
 function normalizeBoolean(value) {
@@ -84,7 +112,17 @@ function resolveDownloadFilePath(downloadDir, filename) {
 }
 
 function normalizeScanPayload(payload = {}) {
-    const filename = ensureTxtBasename(payload.filename);
+    const rawFilenames = Array.isArray(payload.filenames)
+        ? payload.filenames
+        : payload.filename != null
+            ? [payload.filename]
+            : [];
+
+    const filenames = Array.from(new Set(rawFilenames.map(item => ensureTxtBasename(item))));
+    if (filenames.length === 0) {
+        throw new InvalidRequestError('At least one filename is required');
+    }
+
     if (!Array.isArray(payload.keywords)) {
         throw new InvalidRequestError('Keywords must be an array');
     }
@@ -110,7 +148,8 @@ function normalizeScanPayload(payload = {}) {
     const excludeList = normalizeStringList(payload.excludeKeywords || '', { stripUrl });
 
     return {
-        filename,
+        filename: filenames[0],
+        filenames,
         clientKeywords,
         normalizedKeywords: Array.from(new Set(normalizedKeywords)),
         excludeList,
@@ -124,6 +163,8 @@ module.exports = {
     InvalidRequestError,
     stripUrlFromKeyword,
     parseKeywordsQueryParam,
+    parseFilenamesQueryParam,
     resolveDownloadFilePath,
+    getUniqueUploadFilename,
     normalizeScanPayload
 };

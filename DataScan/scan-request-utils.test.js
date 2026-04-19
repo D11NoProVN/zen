@@ -68,6 +68,37 @@ test('normalizeScanPayload should reject invalid keyword shapes', () => {
     }), InvalidRequestError);
 });
 
+test('normalizeScanPayload should normalize filenames arrays and keep backward-compatible filename access', () => {
+    const normalized = normalizeScanPayload({
+        filenames: ['first.txt', ' second.txt ', 'first.txt'],
+        keywords: ['roblox'],
+        excludeKeywords: '',
+        stripUrl: false,
+        dedup: false
+    });
+
+    assert.deepEqual(normalized.filenames, ['first.txt', 'second.txt']);
+    assert.equal(normalized.filename, 'first.txt');
+});
+
+test('normalizeScanPayload should reject empty or invalid filenames arrays', () => {
+    assert.throws(() => normalizeScanPayload({
+        filenames: [],
+        keywords: ['roblox'],
+        excludeKeywords: '',
+        stripUrl: false,
+        dedup: false
+    }), InvalidRequestError);
+
+    assert.throws(() => normalizeScanPayload({
+        filenames: ['../secret.txt'],
+        keywords: ['roblox'],
+        excludeKeywords: '',
+        stripUrl: false,
+        dedup: false
+    }), InvalidRequestError);
+});
+
 test('parseKeywordsQueryParam should parse valid JSON arrays and reject malformed input', () => {
     assert.deepEqual(parseKeywordsQueryParam('["a","b"]'), ['a', 'b']);
 

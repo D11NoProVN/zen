@@ -22,7 +22,9 @@ const {
     InvalidRequestError,
     normalizeScanPayload,
     parseKeywordsQueryParam,
-    resolveDownloadFilePath
+    parseFilenamesQueryParam,
+    resolveDownloadFilePath,
+    getUniqueUploadFilename
 } = require('./scan-request-utils');
 const app = express();
 
@@ -35,7 +37,7 @@ if (!fs.existsSync(DOWNLOAD_DIR)) {
     fs.mkdirSync(DOWNLOAD_DIR, { recursive: true });
 }
 
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
 app.use(express.static(__dirname));
 
 function stripUrlFromKeyword(kw) {
@@ -323,6 +325,157 @@ app.delete('/api/files/:filename', (req, res) => {
     }
 });
 
+app.post('/api/files/upload', async (req, res) => {
+    try {
+        const files = Array.isArray(req.body?.files) ? req.body.files : [];
+        if (files.length === 0) {
+            throw new InvalidRequestError('At least one file is required');
+        }
+
+        const uploaded = [];
+        for (const file of files) {
+            if (!file || typeof file.name !== 'string' || typeof file.content !== 'string') {
+                throw new InvalidRequestError('Each uploaded file must include name and content');
+            }
+
+            const { filename, filepath } = getUniqueUploadFilename(DOWNLOAD_DIR, file.name);
+            fs.writeFileSync(filepath, file.content, 'utf8');
+            const stats = fs.statSync(filepath);
+            uploaded.push({
+                name: filename,
+                size: stats.size,
+                modified: stats.mtime,
+                path: filepath
+            });
+        }
+
+        res.json({ success: true, files: uploaded });
+    } catch (err) {
+        if (err instanceof InvalidRequestError) {
+            return res.status(400).json({ success: false, error: err.message });
+        }
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+async function runFastScan(res, req, normalized) {
+    const { filenames, clientKeywords, normalizedKeywords, excludeKeywords, stripUrl, dedup } = normalized;
+    const results = createAggregationState(normalizedKeywords);
+    const deltaTracker = createDeltaTracker(normalizedKeywords);
+    let lastUpdate = Date.now();
+    let aborted = false;
+    let activeWorkers = [];
+
+    req.on('close', () => {
+        aborted = true;
+        activeWorkers.forEach(w => w.terminate());
+    });
+
+    async function scanSingleFile(filename) {
+        const filepath = resolveDownloadFilePath(DOWNLOAD_DIR, filename);
+        if (!fs.existsSync(filepath)) {
+            throw new InvalidRequestError(`File not found: ${filename}`);
+        }
+
+        const fileSize = fs.statSync(filepath).size;
+        const chunkSize = Math.ceil(fileSize / NUM_WORKERS);
+
+        await new Promise((resolve, reject) => {
+            let completedWorkers = 0;
+            const workers = [];
+            activeWorkers = workers;
+
+            for (let i = 0; i < NUM_WORKERS; i++) {
+                const start = i * chunkSize;
+                const end = Math.min((i + 1) * chunkSize, fileSize);
+
+                const worker = new Worker(path.join(__dirname, 'scan-worker.js'), {
+                    workerData: {
+                        filepath,
+                        start,
+                        end,
+                        keywords: normalizedKeywords,
+                        excludeKeywords,
+                        stripUrl,
+                        dedup: false
+                    }
+                });
+
+                worker.on('message', (msg) => {
+                    if (aborted) {
+                        worker.terminate();
+                        return;
+                    }
+
+                    if (msg.type === 'progress') {
+                        applyWorkerProgress(results, `${filename}:${i}`, msg);
+                        const now = Date.now();
+                        if (now - lastUpdate > 500) {
+                            sendUpdate(filename);
+                            lastUpdate = now;
+                        }
+                    } else if (msg.type === 'complete') {
+                        completedWorkers++;
+                        if (completedWorkers === NUM_WORKERS) {
+                            activeWorkers = [];
+                            resolve();
+                        }
+                    }
+                });
+
+                worker.on('error', reject);
+                workers.push(worker);
+            }
+        });
+    }
+
+    function buildClientPayload() {
+        const topDomains = toTopDomains(results, 10);
+        const delta = buildDeltaPayload(results, deltaTracker);
+        const clientKeywordPayload = mapKeywordPayloadToClientKeywords({
+            perKeyword: delta.perKeyword,
+            perKeywordCounts: results.perKeywordCounts
+        }, clientKeywords, Boolean(stripUrl));
+
+        return {
+            total: results.total,
+            filtered: results.filtered,
+            results: delta.results,
+            perKeyword: clientKeywordPayload.perKeyword,
+            perKeywordCounts: clientKeywordPayload.perKeywordCounts,
+            topDomains,
+            preview: results.lines.slice(-20)
+        };
+    }
+
+    function sendUpdate(currentFile) {
+        res.write(`data: ${JSON.stringify({
+            type: 'progress',
+            currentFile,
+            processedFiles: filenames.length,
+            ...buildClientPayload()
+        })}\n\n`);
+    }
+
+    for (const filename of filenames) {
+        if (aborted) return;
+        await scanSingleFile(filename);
+    }
+
+    if (dedup) {
+        dedupeAggregatedResults(results, normalizedKeywords);
+        results.domainCount = rebuildDomainCountFromLineDomains(results.lineDomains);
+    }
+
+    finalizeAggregatedTotals(results);
+
+    res.write(`data: ${JSON.stringify({
+        type: 'complete',
+        ...buildClientPayload()
+    })}\n\n`);
+    res.end();
+}
+
 // API: Ultra-fast scan with Worker Threads
 app.post('/api/scan-fast', async (req, res) => {
     let normalized;
@@ -335,124 +488,20 @@ app.post('/api/scan-fast', async (req, res) => {
         return res.status(500).json({ success: false, error: err.message });
     }
 
-    const { filename, excludeKeywords, stripUrl, dedup } = normalized;
-    const filepath = resolveDownloadFilePath(DOWNLOAD_DIR, filename);
-
-    if (!fs.existsSync(filepath)) {
-        return res.status(404).json({ success: false, error: 'File not found' });
-    }
-
-    // SSE headers
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
 
-    const fileSize = fs.statSync(filepath).size;
-    const chunkSize = Math.ceil(fileSize / NUM_WORKERS);
-
-    // Split file into chunks for parallel processing
-    const normalizedKeywords = normalized.normalizedKeywords;
-
-    const clientKeywords = normalized.clientKeywords;
-    const workers = [];
-    const results = createAggregationState(normalizedKeywords);
-
-    let completedWorkers = 0;
-    let lastUpdate = Date.now();
-    const deltaTracker = createDeltaTracker(normalizedKeywords);
-
-    for (let i = 0; i < NUM_WORKERS; i++) {
-        const start = i * chunkSize;
-        const end = Math.min((i + 1) * chunkSize, fileSize);
-
-        const worker = new Worker(path.join(__dirname, 'scan-worker.js'), {
-            workerData: {
-                filepath,
-                start,
-                end,
-                keywords: normalizedKeywords,
-                excludeKeywords,
-                stripUrl,
-                dedup: false // Dedup globally after merge
-            }
-        });
-
-        worker.on('message', (msg) => {
-            if (msg.type === 'progress') {
-                applyWorkerProgress(results, i, msg);
-
-                // Send update every 500ms
-                const now = Date.now();
-                if (now - lastUpdate > 500) {
-                    sendUpdate();
-                    lastUpdate = now;
-                }
-            } else if (msg.type === 'complete') {
-                completedWorkers++;
-
-                if (completedWorkers === NUM_WORKERS) {
-                    if (dedup) {
-                        dedupeAggregatedResults(results, normalizedKeywords);
-                        results.domainCount = rebuildDomainCountFromLineDomains(results.lineDomains);
-                    }
-
-                    finalizeAggregatedTotals(results);
-
-                    const topDomains = toTopDomains(results, 10);
-                    const delta = buildDeltaPayload(results, deltaTracker);
-                    const clientKeywordPayload = mapKeywordPayloadToClientKeywords({
-                        perKeyword: delta.perKeyword,
-                        perKeywordCounts: results.perKeywordCounts
-                    }, clientKeywords, Boolean(stripUrl));
-
-                    res.write(`data: ${JSON.stringify({
-                        type: 'complete',
-                        total: results.total,
-                        filtered: results.filtered,
-                        results: delta.results,
-                        perKeyword: clientKeywordPayload.perKeyword,
-                        perKeywordCounts: clientKeywordPayload.perKeywordCounts,
-                        topDomains,
-                        preview: results.lines.slice(-20)
-                    })}\n\n`);
-
-                    res.end();
-                }
-            }
-        });
-
-        worker.on('error', (err) => {
+    try {
+        await runFastScan(res, req, normalized);
+    } catch (err) {
+        if (err instanceof InvalidRequestError) {
             res.write(`data: ${JSON.stringify({ type: 'error', message: err.message })}\n\n`);
-            res.end();
-        });
-
-        workers.push(worker);
+            return res.end();
+        }
+        res.write(`data: ${JSON.stringify({ type: 'error', message: err.message })}\n\n`);
+        res.end();
     }
-
-    function sendUpdate() {
-        const topDomains = toTopDomains(results, 10);
-        const delta = buildDeltaPayload(results, deltaTracker);
-        const clientKeywordPayload = mapKeywordPayloadToClientKeywords({
-            perKeyword: delta.perKeyword,
-            perKeywordCounts: results.perKeywordCounts
-        }, clientKeywords, Boolean(stripUrl));
-
-        res.write(`data: ${JSON.stringify({
-            type: 'progress',
-            total: results.total,
-            filtered: results.filtered,
-            results: delta.results,
-            perKeyword: clientKeywordPayload.perKeyword,
-            perKeywordCounts: clientKeywordPayload.perKeywordCounts,
-            topDomains,
-            preview: results.lines.slice(-20)
-        })}\n\n`);
-    }
-
-    // Handle client disconnect
-    req.on('close', () => {
-        workers.forEach(w => w.terminate());
-    });
 });
 
 // API: GET version for EventSource (SSE)
@@ -461,6 +510,7 @@ app.get('/api/scan-fast', async (req, res) => {
     try {
         normalized = normalizeScanPayload({
             filename: req.query.filename,
+            filenames: parseFilenamesQueryParam(req.query.filenames),
             keywords: parseKeywordsQueryParam(req.query.keywords),
             excludeKeywords: req.query.excludeKeywords || '',
             stripUrl: req.query.stripUrl,
@@ -473,118 +523,20 @@ app.get('/api/scan-fast', async (req, res) => {
         return res.status(500).json({ success: false, error: err.message });
     }
 
-    const { filename, clientKeywords, normalizedKeywords: normalizedKeywordList, excludeKeywords, stripUrl, dedup } = normalized;
-    const filepath = resolveDownloadFilePath(DOWNLOAD_DIR, filename);
-
-    if (!fs.existsSync(filepath)) {
-        return res.status(404).json({ success: false, error: 'File not found' });
-    }
-
-    // SSE headers
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
-    const fileSize = fs.statSync(filepath).size;
-    const chunkSize = Math.ceil(fileSize / NUM_WORKERS);
 
-    // Split file into chunks for parallel processing
-    const workers = [];
-    const results = createAggregationState(normalizedKeywordList);
-
-    let completedWorkers = 0;
-    let lastUpdate = Date.now();
-    const deltaTracker = createDeltaTracker(normalizedKeywordList);
-
-    for (let i = 0; i < NUM_WORKERS; i++) {
-        const start = i * chunkSize;
-        const end = Math.min((i + 1) * chunkSize, fileSize);
-
-        const worker = new Worker(path.join(__dirname, 'scan-worker.js'), {
-            workerData: {
-                filepath,
-                start,
-                end,
-                keywords: normalizedKeywordList,
-                excludeKeywords: excludeKeywords || '',
-                stripUrl: stripUrl === 'true',
-                dedup: false
-            }
-        });
-
-        worker.on('message', (msg) => {
-            if (msg.type === 'progress') {
-                applyWorkerProgress(results, i, msg);
-
-                const now = Date.now();
-                if (now - lastUpdate > 500) {
-                    sendUpdate();
-                    lastUpdate = now;
-                }
-            } else if (msg.type === 'complete') {
-                completedWorkers++;
-
-                if (completedWorkers === NUM_WORKERS) {
-                    if (dedup === 'true') {
-                        dedupeAggregatedResults(results, normalizedKeywordList);
-                        results.domainCount = rebuildDomainCountFromLineDomains(results.lineDomains);
-                    }
-
-                    finalizeAggregatedTotals(results);
-
-                    const topDomains = toTopDomains(results, 10);
-                    const delta = buildDeltaPayload(results, deltaTracker);
-                    const clientKeywordPayload = mapKeywordPayloadToClientKeywords({
-                        perKeyword: delta.perKeyword,
-                        perKeywordCounts: results.perKeywordCounts
-                    }, clientKeywords, stripUrl === 'true');
-
-                    res.write(`data: ${JSON.stringify({
-                        type: 'complete',
-                        total: results.total,
-                        filtered: results.filtered,
-                        results: delta.results,
-                        perKeyword: clientKeywordPayload.perKeyword,
-                        perKeywordCounts: clientKeywordPayload.perKeywordCounts,
-                        topDomains,
-                        preview: results.lines.slice(-20)
-                    })}\n\n`);
-
-                    res.end();
-                }
-            }
-        });
-
-        worker.on('error', (err) => {
+    try {
+        await runFastScan(res, req, normalized);
+    } catch (err) {
+        if (err instanceof InvalidRequestError) {
             res.write(`data: ${JSON.stringify({ type: 'error', message: err.message })}\n\n`);
-            res.end();
-        });
-
-        workers.push(worker);
+            return res.end();
+        }
+        res.write(`data: ${JSON.stringify({ type: 'error', message: err.message })}\n\n`);
+        res.end();
     }
-
-    function sendUpdate() {
-        const topDomains = toTopDomains(results, 10);
-        const delta = buildDeltaPayload(results, deltaTracker);
-        const clientKeywordPayload = mapKeywordPayloadToClientKeywords({
-            perKeyword: delta.perKeyword,
-            perKeywordCounts: results.perKeywordCounts
-        }, clientKeywords, stripUrl === 'true');
-
-        res.write(`data: ${JSON.stringify({
-            type: 'progress',
-            total: results.total,
-            filtered: results.filtered,
-            results: delta.results,
-            perKeyword: clientKeywordPayload.perKeyword,
-            perKeywordCounts: clientKeywordPayload.perKeywordCounts,
-            topDomains,
-            preview: results.lines.slice(-20)
-        })}\n\n`);
-    }
-
-    req.on('close', () => {
-        workers.forEach(w => w.terminate());
-    });
 });
 
 app.listen(PORT, () => {
