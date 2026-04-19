@@ -28,33 +28,34 @@ jobs:
           fi
 
       - name: Chạy Ngrok (Mở cả SSH và Web)
-        env:
-          NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
-        run: |
-          # 1. Tải và xác thực Ngrok
-          curl -s -O https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz
-          tar -xf ngrok-v3-stable-linux-amd64.tgz
-          ./ngrok config add-authtoken $NGROK_AUTH_TOKEN
-          
-          # 2. Viết file cấu hình (Dùng echo để VS Code không báo lỗi đỏ)
-          echo "tunnels:" > ngrok.yml
-          echo "  ssh:" >> ngrok.yml
-          echo "    proto: tcp" >> ngrok.yml
-          echo "    addr: 22" >> ngrok.yml
-          echo "  web:" >> ngrok.yml
-          echo "    proto: http" >> ngrok.yml
-          echo "    addr: 8080" >> ngrok.yml
-          
-          # 3. Chạy tất cả đường hầm
-          ./ngrok start --all --config ngrok.yml > /dev/null &
-          sleep 5
-          
-          # 4. In Link ra màn hình Log
-          echo "=========================================================="
-          echo "ĐÃ MỞ THÀNH CÔNG 2 ĐƯỜNG HẦM!"
-          curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[] | "Link \(.name): \(.public_url)"'
-          echo "Mật khẩu SSH: 123456"
-          echo "=========================================================="
-          
-          # 5. Treo máy (6 tiếng)
-          sleep 21600
+              env:
+                NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
+              run: |
+                # 1. Tải và xác thực Ngrok
+                curl -s -O https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz
+                tar -xf ngrok-v3-stable-linux-amd64.tgz
+                ./ngrok config add-authtoken $NGROK_AUTH_TOKEN
+                
+                # 2. Viết file cấu hình (Đã thêm version: '2' để trị lỗi)
+                echo "version: '2'" > ngrok.yml
+                echo "tunnels:" >> ngrok.yml
+                echo "  ssh:" >> ngrok.yml
+                echo "    proto: tcp" >> ngrok.yml
+                echo "    addr: 22" >> ngrok.yml
+                echo "  web:" >> ngrok.yml
+                echo "    proto: http" >> ngrok.yml
+                echo "    addr: 8080" >> ngrok.yml
+                
+                # 3. Chạy tất cả đường hầm
+                ./ngrok start --all --config ngrok.yml > /dev/null &
+                sleep 5
+                
+                # 4. In Link ra màn hình Log
+                echo "=========================================================="
+                echo "ĐÃ MỞ THÀNH CÔNG 2 ĐƯỜNG HẦM!"
+                curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[] | "Link \(.name): \(.public_url)"'
+                echo "Mật khẩu SSH: 123456"
+                echo "=========================================================="
+                
+                # 5. Treo máy (6 tiếng)
+                sleep 21600
