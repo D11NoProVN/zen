@@ -1,7 +1,7 @@
-name: SSH into Runner
+name: SSH into Runner via Pinggy
 
 on:
-  workflow_dispatch: # Kích hoạt thủ công
+  workflow_workflow_dispatch: # Kích hoạt thủ công
 
 jobs:
   debug-ssh:
@@ -11,13 +11,13 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Cài đặt một số tool cơ bản (Tuỳ chọn)
+      - name: Khởi động SSH và Mở cổng Pinggy
         run: |
-          sudo apt-get update
-          sudo apt-get install -y htop neofetch net-tools tmux
-
-      - name: Mở cổng SSH với tmate
-        uses: mxschmitt/action-tmate@v3
-        with:
-          # Thêm dòng này để tự động tiếp tục workflow nếu bạn ngắt kết nối SSH
-          limit-access-to-actor: false
+          # 1. Khởi động dịch vụ SSH mặc định của máy ảo
+          sudo systemctl start ssh
+          
+          # 2. Đặt mật khẩu cho tài khoản 'runner' (mật khẩu là: 123456)
+          echo "runner:123456" | sudo chpasswd
+          
+          # 3. Tạo đường hầm Pinggy (Lệnh này sẽ treo để giữ kết nối)
+          ssh -p 443 -R0:localhost:22 -o StrictHostKeyChecking=no -o ServerAliveInterval=30 a.pinggy.io
