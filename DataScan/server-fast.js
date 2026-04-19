@@ -362,7 +362,6 @@ async function runFastScan(res, req, normalized) {
     const { filenames, clientKeywords, normalizedKeywords, excludeKeywords, stripUrl, dedup } = normalized;
     const results = createAggregationState(normalizedKeywords);
     const deltaTracker = createDeltaTracker(normalizedKeywords);
-    let lastUpdate = Date.now();
     let aborted = false;
     let activeWorkers = [];
 
@@ -409,11 +408,7 @@ async function runFastScan(res, req, normalized) {
 
                     if (msg.type === 'progress') {
                         applyWorkerProgress(results, `${filename}:${i}`, msg);
-                        const now = Date.now();
-                        if (now - lastUpdate > 500) {
-                            sendUpdate(filename);
-                            lastUpdate = now;
-                        }
+                        sendUpdate(filename);
                     } else if (msg.type === 'complete') {
                         completedWorkers++;
                         if (completedWorkers === NUM_WORKERS) {
