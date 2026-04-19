@@ -3,8 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ZenScan v1.0</title>
-    <meta name="description" content="ZenScan v1.0 — Premium Data Scanner & Keyword Filter Engine">
+    <title>ZenScan v1.0 - Stream Mode</title>
+    <meta name="description" content="ZenScan v1.0 — Premium Data Scanner (Stream Mode for Large Files)">
     <link rel="stylesheet" href="style.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
@@ -30,7 +30,7 @@
                 <div class="brand-icon"><i class="fas fa-bolt"></i></div>
                 <div class="brand-text">
                     <span class="brand-name">ZENSCAN</span>
-                    <span class="brand-version">v1.0 • Blob Engine</span>
+                    <span class="brand-version">v1.0 • Stream Engine</span>
                 </div>
             </div>
 
@@ -43,24 +43,24 @@
                 </div>
             </div>
 
-            <!-- File Drop Zone -->
+            <!-- File Selection -->
             <div class="control-group">
                 <div class="control-label">
-                    <i class="fas fa-folder-open"></i> INPUT FILES
+                    <i class="fas fa-folder-open"></i> SELECT FILES
                     <a href="/download.html" class="btn btn-ghost" style="margin-left: auto; padding: 0.3rem 0.6rem; font-size: 0.65rem;">
                         <i class="fas fa-download"></i> Downloads
                     </a>
                 </div>
-                <div class="drop-zone" id="dropZone">
-                    <input type="file" id="fileInput" accept=".txt" multiple>
-                    <i class="fas fa-cloud-upload-alt drop-zone-icon"></i>
-                    <span class="drop-zone-text">Kéo thả file hoặc folder vào đây</span>
-                    <span class="drop-zone-hint">hoặc click để chọn file • chỉ .txt</span>
-                </div>
-                <button class="btn btn-outline btn-full" id="loadFromDownloadsBtn" style="margin-top: 0.5rem;">
-                    <i class="fas fa-folder-open"></i> Chọn từ Downloads
+                <button class="btn btn-primary btn-full" id="selectFileBtn">
+                    <i class="fas fa-folder-open"></i> Chọn file từ Downloads / Upload
                 </button>
-                <div class="file-list" id="fileList"></div>
+                <div id="selectedFileInfo" style="margin-top: 0.5rem; display: none;">
+                    <div class="file-tag">
+                        <i class="fas fa-file-lines"></i>
+                        <span id="selectedFileName"></span>
+                        <span class="file-size" id="selectedFileSize"></span>
+                    </div>
+                </div>
             </div>
 
             <!-- Keywords -->
@@ -128,9 +128,9 @@
                     <div class="stat-footer">dòng/giây</div>
                 </div>
                 <div class="stat-card">
-                    <div class="stat-label">Data Vol.</div>
+                    <div class="stat-label">File Size</div>
                     <div class="stat-value" id="dataVolume">0 MB</div>
-                    <div class="stat-footer">tổng dung lượng</div>
+                    <div class="stat-footer">dung lượng file</div>
                 </div>
             </div>
 
@@ -144,7 +144,7 @@
                             <div class="analytics-empty">Chưa có keyword nào</div>
                         </div>
                     </div>
-                    
+
                     <div class="action-bar">
                         <button class="btn btn-primary" id="processBtn" disabled>
                             <i class="fas fa-play"></i> BẮT ĐẦU SCAN
@@ -204,6 +204,6 @@
         </main>
     </div>
 
-    <script src="script_v6.js"></script>
+    <script src="script-stream.js"></script>
 </body>
 </html>
