@@ -6,10 +6,21 @@ on:
 jobs:
   debug-ssh:
     runs-on: ubuntu-latest
+    timeout-minutes: 360
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install discord.py python-dotenv pytest
 
       - name: Khởi động SSH và đặt mật khẩu
         run: |
@@ -22,13 +33,13 @@ jobs:
         run: |
           curl -s -O https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz
           tar -xf ngrok-v3-stable-linux-amd64.tgz
-          ./ngrok config add-authtoken $NGROK_AUTH_TOKEN
+          ./ngrok config add-authtoken "$NGROK_AUTH_TOKEN"
           ./ngrok tcp 22 > /dev/null 2>&1 &
           sleep 5
 
           TUNNEL_URL=$(curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url')
-          HOST=$(echo $TUNNEL_URL | sed 's/tcp:\/\///' | cut -d ':' -f 1)
-          PORT=$(echo $TUNNEL_URL | sed 's/tcp:\/\///' | cut -d ':' -f 2)
+          HOST=$(echo "$TUNNEL_URL" | sed 's/tcp:\/\///' | cut -d ':' -f 1)
+          PORT=$(echo "$TUNNEL_URL" | sed 's/tcp:\/\///' | cut -d ':' -f 2)
 
           echo "=========================================="
           echo "SSH:  ssh -p $PORT runner@$HOST"
@@ -40,16 +51,34 @@ jobs:
           curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
             -o cloudflared && chmod +x cloudflared
 
-          # Chạy quick tunnel — không cần tài khoản, không cần token
           ./cloudflared tunnel --url http://localhost:8080 > /tmp/cf.log 2>&1 &
           sleep 8
 
-          # Trích link từ log (dạng https://xxxx.trycloudflare.com)
           CF_URL=$(grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' /tmp/cf.log | head -1)
+          if [ -z "$CF_URL" ]; then
+            echo "Cloudflared URL not found"
+            cat /tmp/cf.log
+            exit 1
+          fi
+
+          printf '%s' "$CF_URL" > /tmp/cloudflared_url.txt
 
           echo "=========================================="
           echo "Web:  $CF_URL"
           echo "=========================================="
+
+      - name: Chạy Discord bot
+        env:
+          DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+          CLOUDFLARED_URL_FILE: /tmp/cloudflared_url.txt
+        run: |
+          python discordbot.py > /tmp/discordbot.log 2>&1 &
+          sleep 5
+          if ! pgrep -f "python discordbot.py" > /dev/null; then
+            echo "Discord bot failed to start"
+            cat /tmp/discordbot.log
+            exit 1
+          fi
 
       - name: Giữ máy sống 6 tiếng
         run: sleep 21600
