@@ -26,7 +26,158 @@ const {
     resolveDownloadFilePath,
     getUniqueUploadFilename
 } = require('./scan-request-utils');
+const {
+    ArchiveExtractionError,
+    detectDownloadedArchiveType,
+    extractDownloadedArchive
+} = require('./download-archive-utils');
 const app = express();
+
+function createDownloadSuccessPayload({ file, extraction }) {
+    if (extraction) {
+        return {
+            success: true,
+            extraction: {
+                archiveType: extraction.archiveType,
+                extractedCount: extraction.extractedCount,
+                files: extraction.files
+            }
+        };
+    }
+
+    return {
+        success: true,
+        file
+    };
+}
+
+function createDownloadCompleteEvent({ file, extraction }) {
+    if (extraction) {
+        return {
+            type: 'complete',
+            extraction: {
+                archiveType: extraction.archiveType,
+                extractedCount: extraction.extractedCount,
+                files: extraction.files
+            }
+        };
+    }
+
+    return {
+        type: 'complete',
+        file
+    };
+}
+
+function buildDownloadFilename(url) {
+    const pathname = new URL(url).pathname;
+    const basename = path.basename(pathname);
+    if (basename && basename !== '/' && basename !== '.') {
+        return basename;
+    }
+
+    return `download_${Date.now()}.txt`;
+}
+
+async function finalizeDownloadedFile({ filepath, filename }) {
+    const archiveType = detectDownloadedArchiveType(filename);
+    if (!archiveType) {
+        const stats = fs.statSync(filepath);
+        return {
+            file: {
+                name: filename,
+                size: stats.size,
+                modified: stats.mtime,
+                path: filepath
+            }
+        };
+    }
+
+    const extraction = await extractDownloadedArchive({
+        archivePath: filepath,
+        archiveType,
+        downloadDir: DOWNLOAD_DIR
+    });
+
+    return { extraction };
+}
+
+function isArchiveExtractionError(err) {
+    return err instanceof ArchiveExtractionError;
+}
+
+function getDownloadErrorStatus(err) {
+    return isArchiveExtractionError(err) ? 400 : 500;
+}
+
+function getDownloadErrorMessage(err) {
+    return err.message;
+}
+
+function getDownloadStartFilename(url) {
+    return buildDownloadFilename(url);
+}
+
+function getDownloadTargetPath(filename) {
+    return path.join(DOWNLOAD_DIR, filename);
+}
+
+function createDownloadFilePayload(file, downloadTime, speed) {
+    return {
+        ...file,
+        downloadTime,
+        speed
+    };
+}
+
+function createFinalDownloadPayload({ finalized, elapsed, speed }) {
+    if (finalized.file) {
+        return createDownloadSuccessPayload({
+            file: createDownloadFilePayload(finalized.file, elapsed, speed)
+        });
+    }
+
+    return createDownloadSuccessPayload({ extraction: finalized.extraction });
+}
+
+function createFinalDownloadEvent({ finalized, elapsed, speed }) {
+    if (finalized.file) {
+        return createDownloadCompleteEvent({
+            file: createDownloadFilePayload(finalized.file, elapsed, speed)
+        });
+    }
+
+    return createDownloadCompleteEvent({ extraction: finalized.extraction });
+}
+
+function startServer() {
+    return app.listen(PORT, () => {
+        console.log(`ZenScan Server running at http://localhost:${PORT}`);
+        console.log(`Using ${NUM_WORKERS} CPU cores for parallel processing`);
+        console.log(`Downloads folder: ${DOWNLOAD_DIR}`);
+    });
+}
+
+module.exports = {
+    app,
+    ArchiveExtractionError,
+    createDownloadSuccessPayload,
+    createDownloadCompleteEvent,
+    buildDownloadFilename,
+    finalizeDownloadedFile,
+    getDownloadErrorStatus,
+    getDownloadErrorMessage,
+    getDownloadStartFilename,
+    getDownloadTargetPath,
+    createFinalDownloadPayload,
+    createFinalDownloadEvent,
+    startServer
+};
+
+if (require.main === module) {
+    startServer();
+}
+
 
 const PORT = 8080;
 const DOWNLOAD_DIR = path.join(__dirname, 'downloads');
@@ -136,16 +287,10 @@ app.post('/api/download', async (req, res) => {
     }
 
     try {
-        let filename = path.basename(new URL(url).pathname);
-        if (!filename.endsWith('.txt')) {
-            filename = `download_${Date.now()}.txt`;
-        }
+        const filename = getDownloadStartFilename(url);
+        const filepath = getDownloadTargetPath(filename);
 
-        const filepath = path.join(DOWNLOAD_DIR, filename);
-
-        // Get file size first
-        const headResponse = await axios.head(url).catch(() => null);
-        const totalSize = headResponse?.headers['content-length'] || 0;
+        await axios.head(url).catch(() => null);
 
         const response = await axios({
             method: 'GET',
@@ -157,12 +302,7 @@ app.post('/api/download', async (req, res) => {
         });
 
         const writer = fs.createWriteStream(filepath);
-        let downloadedSize = 0;
         const startTime = Date.now();
-
-        response.data.on('data', (chunk) => {
-            downloadedSize += chunk.length;
-        });
 
         response.data.pipe(writer);
 
@@ -174,20 +314,11 @@ app.post('/api/download', async (req, res) => {
         const stats = fs.statSync(filepath);
         const elapsed = (Date.now() - startTime) / 1000;
         const speed = stats.size / elapsed;
+        const finalized = await finalizeDownloadedFile({ filepath, filename });
 
-        res.json({
-            success: true,
-            file: {
-                name: filename,
-                size: stats.size,
-                modified: stats.mtime,
-                path: filepath,
-                downloadTime: elapsed,
-                speed: speed
-            }
-        });
+        res.json(createFinalDownloadPayload({ finalized, elapsed, speed }));
     } catch (err) {
-        res.status(500).json({ success: false, error: err.message });
+        res.status(getDownloadErrorStatus(err)).json({ success: false, error: getDownloadErrorMessage(err) });
     }
 });
 
@@ -205,12 +336,8 @@ app.post('/api/download-stream', async (req, res) => {
     res.setHeader('Connection', 'keep-alive');
 
     try {
-        let filename = path.basename(new URL(url).pathname);
-        if (!filename.endsWith('.txt')) {
-            filename = `download_${Date.now()}.txt`;
-        }
-
-        const filepath = path.join(DOWNLOAD_DIR, filename);
+        const filename = getDownloadStartFilename(url);
+        const filepath = getDownloadTargetPath(filename);
 
         // Get file size
         const headResponse = await axios.head(url).catch(() => null);
@@ -240,7 +367,7 @@ app.post('/api/download-stream', async (req, res) => {
             downloadedSize += chunk.length;
 
             const now = Date.now();
-            if (now - lastUpdate > 500) { // Update every 500ms
+            if (now - lastUpdate > 500) {
                 const elapsed = (now - startTime) / 1000;
                 const speed = downloadedSize / elapsed;
                 const progress = totalSize > 0 ? (downloadedSize / totalSize) * 100 : 0;
@@ -268,23 +395,15 @@ app.post('/api/download-stream', async (req, res) => {
         const stats = fs.statSync(filepath);
         const elapsed = (Date.now() - startTime) / 1000;
         const speed = stats.size / elapsed;
+        const finalized = await finalizeDownloadedFile({ filepath, filename });
 
-        res.write(`data: ${JSON.stringify({
-            type: 'complete',
-            file: {
-                name: filename,
-                size: stats.size,
-                modified: stats.mtime,
-                downloadTime: elapsed,
-                speed
-            }
-        })}\n\n`);
+        res.write(`data: ${JSON.stringify(createFinalDownloadEvent({ finalized, elapsed, speed }))}\n\n`);
 
         res.end();
     } catch (err) {
         res.write(`data: ${JSON.stringify({
             type: 'error',
-            message: err.message
+            message: getDownloadErrorMessage(err)
         })}\n\n`);
         res.end();
     }
@@ -534,8 +653,3 @@ app.get('/api/scan-fast', async (req, res) => {
     }
 });
 
-app.listen(PORT, () => {
-    console.log(`ZenScan Server running at http://localhost:${PORT}`);
-    console.log(`Using ${NUM_WORKERS} CPU cores for parallel processing`);
-    console.log(`Downloads folder: ${DOWNLOAD_DIR}`);
-});

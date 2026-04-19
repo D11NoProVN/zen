@@ -111,6 +111,38 @@ function resolveDownloadFilePath(downloadDir, filename) {
     return resolvedFilePath;
 }
 
+function ensureDownloadBasename(filename) {
+    if (typeof filename !== 'string' || !filename.trim()) {
+        throw new InvalidRequestError('Filename is required');
+    }
+
+    const trimmed = filename.trim();
+    if (trimmed !== path.basename(trimmed) || trimmed.includes('/') || trimmed.includes('\\')) {
+        throw new InvalidRequestError('Invalid filename');
+    }
+
+    return trimmed;
+}
+
+function getUniqueDownloadFilename(downloadDir, filename) {
+    const safeFilename = ensureDownloadBasename(filename);
+    const parsed = path.parse(safeFilename);
+    let candidate = safeFilename;
+    let attempt = 1;
+    let targetPath = path.join(downloadDir, candidate);
+
+    while (fs.existsSync(targetPath)) {
+        candidate = `${parsed.name} (${attempt})${parsed.ext}`;
+        targetPath = path.join(downloadDir, candidate);
+        attempt++;
+    }
+
+    return {
+        filename: candidate,
+        filepath: targetPath
+    };
+}
+
 function normalizeScanPayload(payload = {}) {
     const rawFilenames = Array.isArray(payload.filenames)
         ? payload.filenames
@@ -166,5 +198,7 @@ module.exports = {
     parseFilenamesQueryParam,
     resolveDownloadFilePath,
     getUniqueUploadFilename,
+    ensureDownloadBasename,
+    getUniqueDownloadFilename,
     normalizeScanPayload
 };

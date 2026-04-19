@@ -203,6 +203,14 @@ async function downloadFile() {
     }
 }
 
+function getDownloadSuccessMessage(data) {
+    if (data.extraction) {
+        return `Đã giải nén ${data.extraction.extractedCount} file .txt từ archive ${data.extraction.archiveType}`;
+    }
+
+    return `Đã tải thành công: ${data.file.name} (${formatSpeed(data.file.speed)})`;
+}
+
 function handleDownloadProgress(data) {
     if (data.type === 'start') {
         el.progressFilename.textContent = data.filename;
@@ -218,7 +226,7 @@ function handleDownloadProgress(data) {
 
         setTimeout(() => {
             el.downloadProgress.classList.remove('active');
-            notify(`Đã tải thành công: ${data.file.name} (${formatSpeed(data.file.speed)})`, 'success');
+            notify(getDownloadSuccessMessage(data), 'success');
             el.urlInput.value = '';
             loadFiles();
         }, 1000);
