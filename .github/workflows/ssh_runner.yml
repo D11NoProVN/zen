@@ -1,10 +1,10 @@
-name: SSH into Runner via Ngrok (No Web Needed)
+name: SSH & Web via Ngrok
 
 on:
   workflow_dispatch:
 
 jobs:
-  debug-ssh:
+  debug-ssh-web:
     runs-on: ubuntu-latest
 
     steps:
@@ -16,29 +16,45 @@ jobs:
           sudo systemctl start ssh
           echo "runner:123456" | sudo chpasswd
 
-      - name: Chạy Ngrok và Lấy Link Trực Tiếp
+      - name: Chạy Code Web Go (Tùy chọn)
+        run: |
+          # Nếu code Go của bạn nằm trong main.go và chạy trên cổng 8080
+          # Nhớ thêm dấu & ở cuối để nó chạy ngầm, không chặn các bước sau
+          if [ -f main.go ]; then
+            go run main.go &
+            sleep 3 # Đợi 3 giây cho web khởi động
+          else
+            echo "Không tìm thấy file main.go, bỏ qua chạy web."
+          fi
+
+      - name: Chạy Ngrok (Mở cả SSH và Web)
         env:
           NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
         run: |
-          # 1. Tải và cài đặt
+          # 1. Tải và xác thực Ngrok
           curl -s -O https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz
           tar -xf ngrok-v3-stable-linux-amd64.tgz
           ./ngrok config add-authtoken $NGROK_AUTH_TOKEN
           
-          # 2. Chạy ngrok ngầm
-          ./ngrok tcp 22 > /dev/null &
-          sleep 5 # Đợi 5 giây cho Ngrok kết nối xong
+          # 2. Viết file cấu hình (Dùng echo để VS Code không báo lỗi đỏ)
+          echo "tunnels:" > ngrok.yml
+          echo "  ssh:" >> ngrok.yml
+          echo "    proto: tcp" >> ngrok.yml
+          echo "    addr: 22" >> ngrok.yml
+          echo "  web:" >> ngrok.yml
+          echo "    proto: http" >> ngrok.yml
+          echo "    addr: 8080" >> ngrok.yml
           
-          # 3. Dùng API nội bộ để tự trích xuất lệnh SSH (Không cần web Ngrok)
-          TUNNEL_URL=$(curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url')
-          HOST=$(echo $TUNNEL_URL | sed 's/tcp:\/\///' | cut -d ':' -f 1)
-          PORT=$(echo $TUNNEL_URL | sed 's/tcp:\/\///' | cut -d ':' -f 2)
+          # 3. Chạy tất cả đường hầm
+          ./ngrok start --all --config ngrok.yml > /dev/null &
+          sleep 5
           
+          # 4. In Link ra màn hình Log
           echo "=========================================================="
-          echo "NGROK WEBSITE SẬP CŨNG KHÔNG SAO! LỆNH SSH CỦA BẠN ĐÂY:"
-          echo "ssh -p $PORT runner@$HOST"
-          echo "Mật khẩu: 123456"
+          echo "ĐÃ MỞ THÀNH CÔNG 2 ĐƯỜNG HẦM!"
+          curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[] | "Link \(.name): \(.public_url)"'
+          echo "Mật khẩu SSH: 123456"
           echo "=========================================================="
           
-          # Treo máy 6 tiếng
+          # 5. Treo máy (6 tiếng)
           sleep 21600
