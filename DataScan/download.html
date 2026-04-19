@@ -230,6 +230,75 @@
             margin-bottom: 1rem;
             opacity: 0.3;
         }
+
+        /* Modal Styles */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            background: rgba(0, 0, 0, 0.7);
+            backdrop-filter: blur(8px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            opacity: 0;
+            visibility: hidden;
+            transition: all 0.3s ease;
+        }
+        .modal-overlay.active {
+            opacity: 1;
+            visibility: visible;
+        }
+        .modal-content {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-xl);
+            padding: 2rem;
+            width: 90%;
+            max-width: 400px;
+            transform: translateY(20px);
+            transition: all 0.3s ease;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+        }
+        .modal-overlay.active .modal-content {
+            transform: translateY(0);
+        }
+        .modal-header {
+            margin-bottom: 1.5rem;
+        }
+        .modal-title {
+            font-size: 1.25rem;
+            font-weight: 700;
+            color: var(--text-primary);
+            margin-bottom: 0.5rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .modal-title i {
+            color: var(--accent-light);
+        }
+        .modal-desc {
+            font-size: 0.85rem;
+            color: var(--text-dim);
+        }
+        .modal-body {
+            margin-bottom: 1.5rem;
+        }
+        .modal-footer {
+            display: flex;
+            justify-content: flex-end;
+            gap: 1rem;
+        }
+        #passwordError {
+            color: #ff6b6b;
+            font-size: 0.8rem;
+            margin-top: 0.5rem;
+            display: none;
+        }
     </style>
 </head>
 <body>
@@ -329,6 +398,44 @@
             <div class="empty-state">
                 <i class="fas fa-folder-open"></i>
                 <p>Chưa có file nào. Nhập URL để tải file.</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Password Modal -->
+    <div class="modal-overlay" id="passwordModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <div class="modal-title">
+                    <i class="fas fa-lock"></i>
+                    Yêu cầu mật khẩu
+                </div>
+                <div class="modal-desc">
+                    File nén bạn vừa tải có chứa mật khẩu. Vui lòng nhập mật khẩu để tiếp tục giải nén.
+                </div>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label class="form-label">
+                        MẬT KHẨU GIẢI NÉN
+                    </label>
+                    <input
+                        type="password"
+                        class="form-input"
+                        id="modalPasswordInput"
+                        placeholder="Nhập mật khẩu..."
+                    >
+                    <div id="passwordError">Mật khẩu không chính xác, vui lòng thử lại!</div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-ghost" id="modalCancelBtn">
+                    Hủy bỏ
+                </button>
+                <button class="btn btn-primary" id="modalSubmitBtn">
+                    <i class="fas fa-unlock"></i>
+                    Giải nén
+                </button>
             </div>
         </div>
     </div>

@@ -17,10 +17,16 @@ const el = {
     progressSpeed: $('progressSpeed'),
     progressPercent: $('progressPercent'),
     cancelDownloadBtn: $('cancelDownloadBtn'),
-    toastContainer: $('toastContainer')
+    toastContainer: $('toastContainer'),
+    passwordModal: $('passwordModal'),
+    modalPasswordInput: $('modalPasswordInput'),
+    modalCancelBtn: $('modalCancelBtn'),
+    modalSubmitBtn: $('modalSubmitBtn'),
+    passwordError: $('passwordError')
 };
 
 let currentDownload = null;
+let currentArchiveFilename = null;
 let selectedFiles = new Set();
 
 // Toast notification
@@ -231,34 +237,11 @@ function handleDownloadProgress(data) {
             loadFiles();
         }, 1000);
     } else if (data.type === 'password_required') {
-        const password = prompt('File nén có chứa mật khẩu. Vui lòng nhập mật khẩu để tiếp tục giải nén:');
-        if (!password) {
-            notify('Đã hủy giải nén do không có mật khẩu', 'error');
-            el.downloadProgress.classList.remove('active');
-            return;
-        }
-
-        el.progressFilename.textContent = 'Đang giải nén...';
-        el.progressBarFill.style.width = '100%';
-
-        fetch('/api/extract', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ filename: data.filename, password })
-        })
-        .then(res => res.json())
-        .then(extData => {
-            if (extData.success === false) {
-                notify('Giải nén thất bại: ' + extData.error, 'error');
-                el.downloadProgress.classList.remove('active');
-            } else {
-                handleDownloadProgress({ ...extData, type: 'complete' });
-            }
-        })
-        .catch(err => {
-            notify('Lỗi giải nén: ' + err.message, 'error');
-            el.downloadProgress.classList.remove('active');
-        });
+        currentArchiveFilename = data.filename;
+        el.modalPasswordInput.value = '';
+        el.passwordError.style.display = 'none';
+        el.passwordModal.classList.add('active');
+        el.modalPasswordInput.focus();
     } else if (data.type === 'error') {
         notify('Lỗi tải file: ' + data.message, 'error');
         el.downloadProgress.classList.remove('active');
@@ -370,6 +353,63 @@ el.downloadBtn.addEventListener('click', downloadFile);
 el.refreshBtn.addEventListener('click', loadFiles);
 el.urlInput.addEventListener('keypress', e => {
     if (e.key === 'Enter') downloadFile();
+});
+
+// Modal Logic
+el.modalCancelBtn.addEventListener('click', () => {
+    el.passwordModal.classList.remove('active');
+    notify('Đã hủy giải nén', 'info');
+    el.downloadProgress.classList.remove('active');
+});
+
+function submitPassword() {
+    const password = el.modalPasswordInput.value;
+    if (!password) {
+        el.passwordError.textContent = 'Vui lòng nhập mật khẩu!';
+        el.passwordError.style.display = 'block';
+        return;
+    }
+
+    el.modalSubmitBtn.disabled = true;
+    el.modalSubmitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Đang giải nén...';
+    el.passwordError.style.display = 'none';
+
+    fetch('/api/extract', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filename: currentArchiveFilename, password })
+    })
+    .then(res => res.json())
+    .then(data => {
+        el.modalSubmitBtn.disabled = false;
+        el.modalSubmitBtn.innerHTML = '<i class="fas fa-unlock"></i> Giải nén';
+
+        if (data.success === false) {
+            if (data.error === 'PASSWORD_REQUIRED') {
+                el.passwordError.textContent = 'Mật khẩu không chính xác, vui lòng thử lại!';
+                el.passwordError.style.display = 'block';
+                el.modalPasswordInput.value = '';
+                el.modalPasswordInput.focus();
+            } else {
+                notify('Lỗi giải nén: ' + data.error, 'error');
+                el.passwordModal.classList.remove('active');
+                el.downloadProgress.classList.remove('active');
+            }
+        } else {
+            el.passwordModal.classList.remove('active');
+            handleDownloadProgress({ ...data, type: 'complete' });
+        }
+    })
+    .catch(err => {
+        el.modalSubmitBtn.disabled = false;
+        el.modalSubmitBtn.innerHTML = '<i class="fas fa-unlock"></i> Giải nén';
+        notify('Lỗi kết nối: ' + err.message, 'error');
+    });
+}
+
+el.modalSubmitBtn.addEventListener('click', submitPassword);
+el.modalPasswordInput.addEventListener('keypress', e => {
+    if (e.key === 'Enter') submitPassword();
 });
 
 // Initial load

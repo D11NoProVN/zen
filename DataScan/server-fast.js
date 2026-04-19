@@ -413,6 +413,9 @@ app.post('/api/extract', async (req, res) => {
         const finalized = await finalizeDownloadedFile({ filepath, filename, password });
         res.json(createFinalDownloadPayload({ finalized, elapsed: 0, speed: 0 }));
     } catch (err) {
+        if (err instanceof ArchivePasswordRequiredError) {
+            return res.status(400).json({ success: false, error: 'PASSWORD_REQUIRED', message: getDownloadErrorMessage(err) });
+        }
         res.status(getDownloadErrorStatus(err)).json({ success: false, error: getDownloadErrorMessage(err) });
     }
 });
