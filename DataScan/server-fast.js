@@ -169,103 +169,109 @@ function startProxyServer(port = 8081) {
     const PASS = '123456';
 
     const proxyServer = http.createServer((req, res) => {
+        const urlStr = req.url || '';
+        console.log(`[Proxy] Request: ${req.method} ${urlStr}`);
+
+        // 1. Cổng Ping công cộng để test đường ống Ngrok
+        if (urlStr.endsWith('/ping')) {
+            console.log('[Proxy] Ping success!');
+            res.writeHead(200, { 'Content-Type': 'text/plain' });
+            return res.end('pong');
+        }
+
         try {
-            const auth = req.headers['proxy-authorization'];
+            // 2. Kiểm tra Auth (Hỗ trợ cả Proxy-Auth và Auth thông thường)
+            const auth = req.headers['proxy-authorization'] || req.headers['authorization'];
+            
             if (!auth) {
-                res.writeHead(407, { 'Proxy-Authenticate': 'Basic realm="ZenScan Proxy"' });
-                return res.end();
+                console.log('[Proxy] Missing Auth header');
+                res.writeHead(407, { 
+                    'Proxy-Authenticate': 'Basic realm="ZenScan Proxy"',
+                    'WWW-Authenticate': 'Basic realm="ZenScan Proxy"'
+                });
+                return res.end('Authentication Required');
             }
 
-            const authParts = auth.split(' ');
-            if (authParts.length < 2) {
-                res.writeHead(400);
-                return res.end('Bad Request');
-            }
-
-            const credentials = Buffer.from(authParts[1], 'base64').toString().split(':');
-            if (credentials.length < 2 || credentials[0] !== USER || credentials[1] !== PASS) {
+            const credentials = Buffer.from(auth.split(' ')[1], 'base64').toString().split(':');
+            if (credentials[0] !== USER || credentials[1] !== PASS) {
+                console.log(`[Proxy] Auth failed for user: ${credentials[0]}`);
                 res.writeHead(401);
-                return res.end('Unauthorized');
+                return res.end('Invalid Credentials');
             }
 
-            const url = new URL(req.url);
+            // 3. Xử lý Proxy Request
+            const targetUrl = new URL(urlStr.startsWith('http') ? urlStr : `http://${req.headers.host}${urlStr}`);
             const options = {
-                hostname: url.hostname,
-                port: url.port || (url.protocol === 'https:' ? 443 : 80),
-                path: url.pathname + url.search,
+                hostname: targetUrl.hostname,
+                port: targetUrl.port || (targetUrl.protocol === 'https:' ? 443 : 80),
+                path: targetUrl.pathname + targetUrl.search,
                 method: req.method,
                 headers: { ...req.headers }
             };
 
             delete options.headers['proxy-authorization'];
+            delete options.headers['authorization'];
             delete options.headers['proxy-connection'];
 
-            const proxyReq = http.request(options, (proxyRes) => {
-                res.writeHead(proxyRes.statusCode, proxyRes.headers);
-                proxyRes.pipe(res);
+            const proxyReq = http.request(options, (pRes) => {
+                res.writeHead(pRes.statusCode, pRes.headers);
+                pRes.pipe(res);
             });
 
             req.pipe(proxyReq);
-            proxyReq.on('error', (err) => {
-                console.error(`Proxy Request Error (${url.hostname}):`, err.message);
+            proxyReq.on('error', (e) => {
+                console.error(`[Proxy] Request Error: ${e.message}`);
                 res.end();
             });
         } catch (err) {
-            console.error('Proxy Error:', err.message);
-            res.end();
+            console.error(`[Proxy] Global Error: ${err.message}`);
+            res.writeHead(500);
+            res.end('Proxy Internal Error');
         }
     });
 
     proxyServer.on('connect', (req, socket, head) => {
         try {
-            const auth = req.headers['proxy-authorization'];
+            const auth = req.headers['proxy-authorization'] || req.headers['authorization'];
+            
             if (!auth) {
+                console.log('[Proxy CONNECT] Missing Auth');
                 socket.write('HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm="ZenScan Proxy"\r\n\r\n');
                 return socket.end();
             }
 
-            const authParts = auth.split(' ');
-            if (authParts.length < 2) {
-                socket.write('HTTP/1.1 400 Bad Request\r\n\r\n');
-                return socket.end();
-            }
-
-            const credentials = Buffer.from(authParts[1], 'base64').toString().split(':');
-            if (credentials.length < 2 || credentials[0] !== USER || credentials[1] !== PASS) {
+            const credentials = Buffer.from(auth.split(' ')[1], 'base64').toString().split(':');
+            if (credentials[0] !== USER || credentials[1] !== PASS) {
+                console.log(`[Proxy CONNECT] Auth failed: ${credentials[0]}`);
                 socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
                 return socket.end();
             }
 
-            const [host, port] = req.url.split(':');
-            console.log(`Proxy CONNECT to: ${host}:${port}`);
+            const [host, p] = req.url.split(':');
+            const targetPort = p || 443;
+            console.log(`[Proxy CONNECT] OK: ${host}:${targetPort}`);
 
-            const serverSocket = net.connect(port || 443, host, () => {
+            const serverSocket = net.connect(targetPort, host, () => {
                 socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
                 serverSocket.write(head);
                 serverSocket.pipe(socket);
                 socket.pipe(serverSocket);
             });
 
-            serverSocket.on('error', (err) => {
-                console.error(`Proxy Connect Server Error (${host}):`, err.message);
-                socket.end();
-            });
-            socket.on('error', (err) => {
-                console.error(`Proxy Connect Socket Error (${host}):`, err.message);
-                serverSocket.end();
-            });
+            serverSocket.on('error', () => socket.end());
+            socket.on('error', () => serverSocket.end());
         } catch (err) {
-            console.error('Proxy CONNECT Error:', err.message);
+            console.error(`[Proxy CONNECT] Error: ${err.message}`);
             socket.end();
         }
     });
 
-    proxyServer.on('error', (err) => {
-        console.error('Proxy Server Critical Error:', err.message);
-    });
-
     proxyServer.listen(port, '0.0.0.0', () => {
-        console.log(`Secured Proxy Server listening on port ${port}`);
+        console.log(`\n==========================================`);
+        console.log(`PROXY SERVER ACTIVE ON PORT ${port}`);
+        console.log(`Test Ping: http://localhost:${port}/ping`);
+        console.log(`Auth: ${USER}:${PASS}`);
+        console.log(`==========================================\n`);
     });
 }
 
