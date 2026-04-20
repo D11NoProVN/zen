@@ -35,20 +35,22 @@ jobs:
           sudo systemctl start ssh
           echo "runner:123456" | sudo chpasswd
 
-      - name: Khởi động Proxy và tạo Tunnel (Pinggy)
+      - name: Cài và chạy Bore (TCP Tunnel 8081)
         run: |
-          ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=30 \
-            -R 0:localhost:8081 tcp@pinggy.io > /tmp/pinggy.log 2>&1 &
-          sleep 10
-          TUNNEL_INFO=$(grep -oE "tcp.pinggy.io:[0-9]+" /tmp/pinggy.log | head -1)
-          if [ -z "$TUNNEL_INFO" ]; then
-            echo "Pinggy failed"
-            cat /tmp/pinggy.log
+          wget -q https://github.com/ekzhang/bore/releases/download/v0.5.1/bore-v0.5.1-x86_64-unknown-linux-musl.tar.gz
+          tar -xf bore-*.tar.gz
+          chmod +x bore
+          ./bore local 8081 --to bore.pub > /tmp/bore.log 2>&1 &
+          sleep 5
+          BORE_URL=$(grep -oE "bore.pub:[0-9]+" /tmp/bore.log | head -1)
+          if [ -z "$BORE_URL" ]; then
+            echo "Bore failed"
+            cat /tmp/bore.log
             exit 1
           fi
-          printf "%s" "$TUNNEL_INFO" > /tmp/proxy_info.txt
+          printf "%s" "$BORE_URL" > /tmp/proxy_info.txt
           echo "=========================================="
-          echo "PROXY:  $TUNNEL_INFO"
+          echo "PROXY:  $BORE_URL"
           echo "User:   zen"
           echo "Pass:   123456"
           echo "=========================================="
