@@ -64,7 +64,7 @@ class TunnelBot(discord.Client):
                 else:
                     info = PROXY_INFO_FILE.read_text().strip()
                     host, p = info.split(':')
-                    message = f"**Proxy GitHub của mày đây:**\nIP/Host: `{host}`\nPort: `{p}`\nUser: `zen` | Pass: `123456`"
+                    message = f"**Proxy của mày đây:**\nIP/Host: `{host}`\nPort: `{p}`\nUser: `zen` | Pass: `123456`"
             
             await interaction.response.send_message(message)
 
