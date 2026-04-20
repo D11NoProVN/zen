@@ -173,8 +173,13 @@ function startProxyServer(port = 8081) {
                 port: url.port || 80,
                 path: url.pathname + url.search,
                 method: req.method,
-                headers: req.headers
+                headers: { ...req.headers }
             };
+
+            // Remove headers that might identify as proxy
+            delete options.headers['proxy-connection'];
+            delete options.headers['x-forwarded-for'];
+            delete options.headers['via'];
 
             const proxyReq = http.request(options, (proxyRes) => {
                 res.writeHead(proxyRes.statusCode, proxyRes.headers);
@@ -182,7 +187,10 @@ function startProxyServer(port = 8081) {
             });
 
             req.pipe(proxyReq);
-            proxyReq.on('error', () => res.end());
+            proxyReq.on('error', (err) => {
+                console.error('Proxy Request Error:', err.message);
+                res.end();
+            });
         } catch (err) {
             res.end();
         }
@@ -196,11 +204,14 @@ function startProxyServer(port = 8081) {
             serverSocket.pipe(socket);
             socket.pipe(serverSocket);
         });
-        serverSocket.on('error', () => socket.end());
+        serverSocket.on('error', (err) => {
+            console.error('Proxy Connect Error:', err.message);
+            socket.end();
+        });
     });
 
     proxyServer.listen(port, '0.0.0.0', () => {
-        console.log(`Proxy Server (HTTP/HTTPS Tunnel) running at port ${port}`);
+        console.log(`Transparent Proxy Server running at port ${port}`);
     });
 }
 
@@ -398,13 +409,21 @@ app.post('/api/download', async (req, res) => {
             ...config,
             method: 'GET',
             url: url,
-            responseType: 'stream'
+            responseType: 'stream',
+            validateStatus: (status) => status === 200
         });
 
         const writer = fs.createWriteStream(filepath);
         const startTime = Date.now();
 
-        await pipeline(response.data, writer);
+        try {
+            await pipeline(response.data, writer);
+        } catch (pipeErr) {
+            // If pipeline fails, ensure writer is closed and cleanup
+            writer.close();
+            if (fs.existsSync(filepath)) fs.unlinkSync(filepath);
+            throw new Error(`Download failed during transfer: ${pipeErr.message}. Possible out of disk space.`);
+        }
 
         const stats = fs.statSync(filepath);
         const elapsed = (Date.now() - startTime) / 1000;
@@ -454,7 +473,8 @@ app.post('/api/download-stream', async (req, res) => {
             ...config,
             method: 'GET',
             url: url,
-            responseType: 'stream'
+            responseType: 'stream',
+            validateStatus: (status) => status === 200
         });
 
         const writer = fs.createWriteStream(filepath);
@@ -484,7 +504,13 @@ app.post('/api/download-stream', async (req, res) => {
             }
         });
 
-        await pipeline(response.data, writer);
+        try {
+            await pipeline(response.data, writer);
+        } catch (pipeErr) {
+            writer.close();
+            if (fs.existsSync(filepath)) fs.unlinkSync(filepath);
+            throw new Error(`Streaming download failed: ${pipeErr.message}. Possible out of disk space.`);
+        }
 
         const stats = fs.statSync(filepath);
         const elapsed = (Date.now() - startTime) / 1000;
