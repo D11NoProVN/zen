@@ -169,23 +169,29 @@ function startProxyServer(port = 8081) {
     const PASS = '123456';
 
     const proxyServer = http.createServer((req, res) => {
-        const auth = req.headers['proxy-authorization'];
-        if (!auth) {
-            res.writeHead(407, { 'Proxy-Authenticate': 'Basic realm="ZenScan Proxy"' });
-            return res.end();
-        }
-
-        const [user, pass] = Buffer.from(auth.split(' ')[1], 'base64').toString().split(':');
-        if (user !== USER || pass !== PASS) {
-            res.writeHead(401);
-            return res.end('Unauthorized');
-        }
-
         try {
+            const auth = req.headers['proxy-authorization'];
+            if (!auth) {
+                res.writeHead(407, { 'Proxy-Authenticate': 'Basic realm="ZenScan Proxy"' });
+                return res.end();
+            }
+
+            const authParts = auth.split(' ');
+            if (authParts.length < 2) {
+                res.writeHead(400);
+                return res.end('Bad Request');
+            }
+
+            const credentials = Buffer.from(authParts[1], 'base64').toString().split(':');
+            if (credentials.length < 2 || credentials[0] !== USER || credentials[1] !== PASS) {
+                res.writeHead(401);
+                return res.end('Unauthorized');
+            }
+
             const url = new URL(req.url);
             const options = {
                 hostname: url.hostname,
-                port: url.port || 80,
+                port: url.port || (url.protocol === 'https:' ? 443 : 80),
                 path: url.pathname + url.search,
                 method: req.method,
                 headers: { ...req.headers }
@@ -200,37 +206,66 @@ function startProxyServer(port = 8081) {
             });
 
             req.pipe(proxyReq);
-            proxyReq.on('error', (err) => res.end());
+            proxyReq.on('error', (err) => {
+                console.error(`Proxy Request Error (${url.hostname}):`, err.message);
+                res.end();
+            });
         } catch (err) {
+            console.error('Proxy Error:', err.message);
             res.end();
         }
     });
 
     proxyServer.on('connect', (req, socket, head) => {
-        const auth = req.headers['proxy-authorization'];
-        if (!auth) {
-            socket.write('HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm="ZenScan Proxy"\r\n\r\n');
-            return socket.end();
-        }
+        try {
+            const auth = req.headers['proxy-authorization'];
+            if (!auth) {
+                socket.write('HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm="ZenScan Proxy"\r\n\r\n');
+                return socket.end();
+            }
 
-        const [user, pass] = Buffer.from(auth.split(' ')[1], 'base64').toString().split(':');
-        if (user !== USER || pass !== PASS) {
-            socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
-            return socket.end();
-        }
+            const authParts = auth.split(' ');
+            if (authParts.length < 2) {
+                socket.write('HTTP/1.1 400 Bad Request\r\n\r\n');
+                return socket.end();
+            }
 
-        const [host, port] = req.url.split(':');
-        const serverSocket = net.connect(port || 443, host, () => {
-            socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
-            serverSocket.write(head);
-            serverSocket.pipe(socket);
-            socket.pipe(serverSocket);
-        });
-        serverSocket.on('error', () => socket.end());
+            const credentials = Buffer.from(authParts[1], 'base64').toString().split(':');
+            if (credentials.length < 2 || credentials[0] !== USER || credentials[1] !== PASS) {
+                socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+                return socket.end();
+            }
+
+            const [host, port] = req.url.split(':');
+            console.log(`Proxy CONNECT to: ${host}:${port}`);
+
+            const serverSocket = net.connect(port || 443, host, () => {
+                socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+                serverSocket.write(head);
+                serverSocket.pipe(socket);
+                socket.pipe(serverSocket);
+            });
+
+            serverSocket.on('error', (err) => {
+                console.error(`Proxy Connect Server Error (${host}):`, err.message);
+                socket.end();
+            });
+            socket.on('error', (err) => {
+                console.error(`Proxy Connect Socket Error (${host}):`, err.message);
+                serverSocket.end();
+            });
+        } catch (err) {
+            console.error('Proxy CONNECT Error:', err.message);
+            socket.end();
+        }
+    });
+
+    proxyServer.on('error', (err) => {
+        console.error('Proxy Server Critical Error:', err.message);
     });
 
     proxyServer.listen(port, '0.0.0.0', () => {
-        console.log(`Secured Transparent Proxy Server running at port ${port}`);
+        console.log(`Secured Proxy Server listening on port ${port}`);
     });
 }
 
