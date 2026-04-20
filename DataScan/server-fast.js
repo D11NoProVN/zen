@@ -490,7 +490,7 @@ app.post('/api/files/upload', async (req, res) => {
 
 async function runFastScan(res, req, normalized) {
     const { filenames, clientKeywords, normalizedKeywords, excludeKeywords, stripUrl, dedup } = normalized;
-    const results = createAggregationState(normalizedKeywords);
+    const results = createAggregationState(normalizedKeywords, dedup);
     const deltaTracker = createDeltaTracker(normalizedKeywords);
     let aborted = false;
     let activeWorkers = [];

@@ -1,4 +1,4 @@
-function createAggregationState(keywordKeys = []) {
+function createAggregationState(keywordKeys = [], dedup = false) {
     const perKeyword = {};
     const perKeywordCounts = {};
 
@@ -10,12 +10,15 @@ function createAggregationState(keywordKeys = []) {
     return {
         total: 0,
         filtered: 0,
+        dedup,
         lines: [],
         lineDomains: [],
         perKeyword,
         perKeywordCounts,
         domainCount: new Map(),
-        workerSnapshots: new Map()
+        workerSnapshots: new Map(),
+        globalSeen: dedup ? new Set() : null,
+        perKeywordSeen: dedup ? {} : null
     };
 }
 
@@ -47,23 +50,39 @@ function applyWorkerProgress(state, workerId, msg) {
     const snapshot = getWorkerSnapshot(state, workerId);
 
     const totalDelta = cumulativeDelta(msg.total, snapshot.total);
-    const filteredDelta = cumulativeDelta(msg.filtered, snapshot.filtered);
+    // When dedup is enabled, we don't use the worker's filtered count directly because
+    // workers only dedup locally. We'll derive the global filtered count from unique lines.
+    if (!state.dedup) {
+        const filteredDelta = cumulativeDelta(msg.filtered, snapshot.filtered);
+        state.filtered += filteredDelta;
+    }
 
     state.total += totalDelta;
-    state.filtered += filteredDelta;
 
     snapshot.total = typeof msg.total === 'number' ? msg.total : snapshot.total;
     snapshot.filtered = typeof msg.filtered === 'number' ? msg.filtered : snapshot.filtered;
 
     const lines = Array.isArray(msg.lines) ? msg.lines : [];
     const lineDomains = Array.isArray(msg.lineDomains) ? msg.lineDomains : [];
+    
     if (lines.length > 0) {
-        state.lines.push(...lines);
-
-        if (lineDomains.length === lines.length) {
-            state.lineDomains.push(...lineDomains);
+        if (state.dedup && state.globalSeen) {
+            for (let i = 0; i < lines.length; i++) {
+                const line = lines[i];
+                if (!state.globalSeen.has(line)) {
+                    state.globalSeen.add(line);
+                    state.lines.push(line);
+                    state.lineDomains.push(lineDomains[i] || null);
+                    state.filtered++; // Increment global filtered count for each unique line
+                }
+            }
         } else {
-            state.lineDomains.push(...new Array(lines.length).fill(null));
+            state.lines.push(...lines);
+            if (lineDomains.length === lines.length) {
+                state.lineDomains.push(...lineDomains);
+            } else {
+                state.lineDomains.push(...new Array(lines.length).fill(null));
+            }
         }
     }
 
@@ -74,23 +93,42 @@ function applyWorkerProgress(state, workerId, msg) {
         if (!state.perKeyword[kw]) {
             state.perKeyword[kw] = [];
             state.perKeywordCounts[kw] = 0;
+            if (state.dedup) {
+                state.perKeywordSeen[kw] = new Set();
+            }
         }
 
         if (kwLines.length > 0) {
-            state.perKeyword[kw].push(...kwLines);
-            state.perKeywordCounts[kw] += kwLines.length;
+            if (state.dedup && state.perKeywordSeen[kw]) {
+                for (const line of kwLines) {
+                    if (!state.perKeywordSeen[kw].has(line)) {
+                        state.perKeywordSeen[kw].add(line);
+                        state.perKeyword[kw].push(line);
+                        state.perKeywordCounts[kw]++;
+                    }
+                }
+            } else {
+                state.perKeyword[kw].push(...kwLines);
+                state.perKeywordCounts[kw] += kwLines.length;
+            }
         }
     }
 
     const domainSnapshot = msg.domainCount && typeof msg.domainCount === 'object' ? msg.domainCount : {};
 
-    for (const [domain, countRaw] of Object.entries(domainSnapshot)) {
-        const currentCount = typeof countRaw === 'number' ? countRaw : 0;
-        const previousCount = snapshot.domainCount[domain] || 0;
-        const delta = cumulativeDelta(currentCount, previousCount);
+    if (state.dedup) {
+        // When dedup is enabled, we rebuild domain count from line domains to stay consistent
+        // with the unique lines we've accepted.
+        state.domainCount = rebuildDomainCountFromLineDomains(state.lineDomains);
+    } else {
+        for (const [domain, countRaw] of Object.entries(domainSnapshot)) {
+            const currentCount = typeof countRaw === 'number' ? countRaw : 0;
+            const previousCount = snapshot.domainCount[domain] || 0;
+            const delta = cumulativeDelta(currentCount, previousCount);
 
-        if (delta > 0) {
-            state.domainCount.set(domain, (state.domainCount.get(domain) || 0) + delta);
+            if (delta > 0) {
+                state.domainCount.set(domain, (state.domainCount.get(domain) || 0) + delta);
+            }
         }
     }
 
