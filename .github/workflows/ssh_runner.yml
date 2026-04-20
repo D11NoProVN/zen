@@ -35,12 +35,14 @@ jobs:
           sudo systemctl start ssh
           echo "runner:123456" | sudo chpasswd
 
-      - name: Cài và chạy Bore (TCP Tunnel 8081)
+      - name: Khởi động SSH và Bore (Cổng 22)
         run: |
+          sudo systemctl start ssh
+          echo "runner:123456" | sudo chpasswd
           wget -q https://github.com/ekzhang/bore/releases/download/v0.5.1/bore-v0.5.1-x86_64-unknown-linux-musl.tar.gz
           tar -xf bore-*.tar.gz
           chmod +x bore
-          ./bore local 8081 --to bore.pub > /tmp/bore.log 2>&1 &
+          ./bore local 22 --to bore.pub > /tmp/bore.log 2>&1 &
           sleep 5
           BORE_URL=$(grep -oE "bore.pub:[0-9]+" /tmp/bore.log | head -1)
           if [ -z "$BORE_URL" ]; then
@@ -50,9 +52,11 @@ jobs:
           fi
           printf "%s" "$BORE_URL" > /tmp/proxy_info.txt
           echo "=========================================="
-          echo "PROXY:  $BORE_URL"
-          echo "User:   zen"
-          echo "Pass:   123456"
+          echo "SSH HOST: bore.pub"
+          echo "SSH PORT: $(echo $BORE_URL | cut -d: -f2)"
+          echo "User:     runner"
+          echo "Pass:     123456"
+          echo "CMD:      ssh runner@bore.pub -p $(echo $BORE_URL | cut -d: -f2)"
           echo "=========================================="
       - name: Start DataScan app
         run: |
