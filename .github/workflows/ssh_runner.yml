@@ -37,17 +37,17 @@ jobs:
 
       - name: Khởi động Proxy và tạo Tunnel (localhost.run)
         run: |
-          ssh -o StrictHostKeyChecking=no -R 80:localhost:8081 nokey@localhost.run > /tmp/tunnel.log 2>&1 &
+          ssh -o StrictHostKeyChecking=no -R 0:localhost:8081 nokey@localhost.run > /tmp/tunnel.log 2>&1 &
           sleep 5
-          TUNNEL_URL=$(grep -oE "[a-zA-Z0-9.-]+\.lhr\.(life|pro)" /tmp/tunnel.log | head -1)
-          if [ -z "$TUNNEL_URL" ]; then
+          TUNNEL_INFO=$(grep -oE "[a-zA-Z0-9.-]+\.lhr\.(life|pro):[0-9]+" /tmp/tunnel.log | head -1)
+          if [ -z "$TUNNEL_INFO" ]; then
             echo "Localhost.run failed"
             cat /tmp/tunnel.log
             exit 1
           fi
-          printf "%s:80" "$TUNNEL_URL" > /tmp/proxy_info.txt
+          printf "%s" "$TUNNEL_INFO" > /tmp/proxy_info.txt
           echo "=========================================="
-          echo "PROXY:  $TUNNEL_URL:80"
+          echo "PROXY:  $TUNNEL_INFO"
           echo "User:   zen"
           echo "Pass:   123456"
           echo "=========================================="
