@@ -49,11 +49,13 @@ jobs:
           HOST=$(echo "$TUNNEL_URL" | sed 's/tcp:\/\///' | cut -d ':' -f 1)
           PORT=$(echo "$TUNNEL_URL" | sed 's/tcp:\/\///' | cut -d ':' -f 2)
 
-          echo "=========================================="
-          echo "SSH:  ssh -p $PORT runner@$HOST"
-          echo "Pass: 123456"
-          echo "=========================================="
 
+          echo "=========================================="
+          echo "SSH:    ssh -p $PORT runner@$HOST"
+          echo "PROXY:  Để dùng Proxy GitHub trên máy bạn, hãy chạy lệnh:"
+          echo "        ssh -p $PORT -L 8081:localhost:8081 runner@$HOST"
+          echo "Pass:   123456"
+          echo "=========================================="
       - name: Start DataScan app
         run: |
           cd DataScan

@@ -5,6 +5,7 @@ const el = {
     urlInput: $('urlInput'),
     downloadBtn: $('downloadBtn'),
     refreshBtn: $('refreshBtn'),
+    proxyInput: $('proxyInput'),
     filesContainer: $('filesContainer'),
     fileCount: $('fileCount'),
     selectAllBtn: $('selectAllBtn'),
@@ -152,6 +153,7 @@ function updateDeleteButton() {
 // Download file with progress
 async function downloadFile() {
     const url = el.urlInput.value.trim();
+    const proxy = el.proxyInput.value.trim();
 
     if (!url) {
         notify('Vui lòng nhập URL!', 'error');
@@ -171,9 +173,8 @@ async function downloadFile() {
         const response = await fetch('/api/download-stream', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url })
+            body: JSON.stringify({ url, proxy })
         });
-
         if (!response.ok) {
             throw new Error('Download failed');
         }

@@ -3,6 +3,7 @@ const express = require('express');
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
+const { pipeline } = require('node:stream/promises');
 const { Worker } = require('worker_threads');
 const os = require('os');
 const {
@@ -114,15 +115,101 @@ function buildDownloadFilename(url, headers = {}) {
 
 const AXIOS_CONFIG = {
     headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Referer': 'https://fex.net/'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+        'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7',
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache',
+        'DNT': '1',
+        'Upgrade-Insecure-Requests': '1'
     },
     maxContentLength: Infinity,
     maxBodyLength: Infinity,
-    timeout: 0
+    timeout: 0,
+    maxRedirects: 10
 };
 
+function getAxiosConfig(url, proxyUrl = null) {
+    const origin = new URL(url).origin;
+    const config = {
+        ...AXIOS_CONFIG,
+        headers: {
+            ...AXIOS_CONFIG.headers,
+            'Referer': origin + '/'
+        }
+    };
+
+    if (proxyUrl) {
+        try {
+            const p = new URL(proxyUrl);
+            config.proxy = {
+                protocol: p.protocol.replace(':', ''),
+                host: p.hostname,
+                port: parseInt(p.port || (p.protocol === 'https:' ? 443 : 80))
+            };
+            if (p.username) {
+                config.proxy.auth = {
+                    username: decodeURIComponent(p.username),
+                    password: decodeURIComponent(p.password)
+                };
+            }
+        } catch (err) {
+            // Ignore invalid proxy
+        }
+    }
+
+    return config;
+}
+
+const http = require('node:http');
+const net = require('node:net');
+
+function startProxyServer(port = 8081) {
+    const proxyServer = http.createServer((req, res) => {
+        try {
+            const url = new URL(req.url);
+            const options = {
+                hostname: url.hostname,
+                port: url.port || 80,
+                path: url.pathname + url.search,
+                method: req.method,
+                headers: req.headers
+            };
+
+            const proxyReq = http.request(options, (proxyRes) => {
+                res.writeHead(proxyRes.statusCode, proxyRes.headers);
+                proxyRes.pipe(res);
+            });
+
+            req.pipe(proxyReq);
+            proxyReq.on('error', () => res.end());
+        } catch (err) {
+            res.end();
+        }
+    });
+
+    proxyServer.on('connect', (req, socket, head) => {
+        const [host, port] = req.url.split(':');
+        const serverSocket = net.connect(port || 443, host, () => {
+            socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+            serverSocket.write(head);
+            serverSocket.pipe(socket);
+            socket.pipe(serverSocket);
+        });
+        serverSocket.on('error', () => socket.end());
+    });
+
+    proxyServer.listen(port, '0.0.0.0', () => {
+        console.log(`Proxy Server (HTTP/HTTPS Tunnel) running at port ${port}`);
+    });
+}
+
 async function finalizeDownloadedFile({ filepath, filename, password }) {
+    const stats = fs.statSync(filepath);
+    if (stats.size === 0) {
+        throw new Error('Downloaded file is empty (0 bytes). Check if the link is expired or blocked.');
+    }
+
     const archiveType = detectDownloadedArchiveType(filename);
     if (!archiveType) {
         const stats = fs.statSync(filepath);
@@ -295,19 +382,20 @@ app.get('/api/files', (req, res) => {
 
 // API: Download file from URL with progress
 app.post('/api/download', async (req, res) => {
-    const { url } = req.body;
+    const { url, proxy } = req.body;
 
     if (!url) {
         return res.status(400).json({ success: false, error: 'URL is required' });
     }
 
     try {
-        const headResponse = await axios.head(url, AXIOS_CONFIG).catch(() => null);
+        const config = getAxiosConfig(url, proxy);
+        const headResponse = await axios.head(url, config).catch(() => null);
         const filename = getDownloadStartFilename(url, headResponse?.headers);
         const filepath = getDownloadTargetPath(filename);
 
         const response = await axios({
-            ...AXIOS_CONFIG,
+            ...config,
             method: 'GET',
             url: url,
             responseType: 'stream'
@@ -316,12 +404,7 @@ app.post('/api/download', async (req, res) => {
         const writer = fs.createWriteStream(filepath);
         const startTime = Date.now();
 
-        response.data.pipe(writer);
-
-        await new Promise((resolve, reject) => {
-            writer.on('finish', resolve);
-            writer.on('error', reject);
-        });
+        await pipeline(response.data, writer);
 
         const stats = fs.statSync(filepath);
         const elapsed = (Date.now() - startTime) / 1000;
@@ -331,7 +414,8 @@ app.post('/api/download', async (req, res) => {
         res.json(createFinalDownloadPayload({ finalized, elapsed, speed }));
     } catch (err) {
         if (err instanceof ArchivePasswordRequiredError) {
-            const headResponse = await axios.head(url, AXIOS_CONFIG).catch(() => null);
+            const config = getAxiosConfig(url, proxy);
+            const headResponse = await axios.head(url, config).catch(() => null);
             const filename = getDownloadStartFilename(url, headResponse?.headers);
             return res.status(400).json({ success: false, error: 'PASSWORD_REQUIRED', filename, message: getDownloadErrorMessage(err) });
         }
@@ -341,7 +425,7 @@ app.post('/api/download', async (req, res) => {
 
 // API: Download with SSE progress
 app.post('/api/download-stream', async (req, res) => {
-    const { url } = req.body;
+    const { url, proxy } = req.body;
 
     if (!url) {
         return res.status(400).json({ success: false, error: 'URL is required' });
@@ -353,7 +437,8 @@ app.post('/api/download-stream', async (req, res) => {
     res.setHeader('Connection', 'keep-alive');
 
     try {
-        const headResponse = await axios.head(url, AXIOS_CONFIG).catch(() => null);
+        const config = getAxiosConfig(url, proxy);
+        const headResponse = await axios.head(url, config).catch(() => null);
         const filename = getDownloadStartFilename(url, headResponse?.headers);
         const filepath = getDownloadTargetPath(filename);
 
@@ -366,7 +451,7 @@ app.post('/api/download-stream', async (req, res) => {
         })}\n\n`);
 
         const response = await axios({
-            ...AXIOS_CONFIG,
+            ...config,
             method: 'GET',
             url: url,
             responseType: 'stream'
@@ -399,12 +484,7 @@ app.post('/api/download-stream', async (req, res) => {
             }
         });
 
-        response.data.pipe(writer);
-
-        await new Promise((resolve, reject) => {
-            writer.on('finish', resolve);
-            writer.on('error', reject);
-        });
+        await pipeline(response.data, writer);
 
         const stats = fs.statSync(filepath);
         const elapsed = (Date.now() - startTime) / 1000;
@@ -416,7 +496,8 @@ app.post('/api/download-stream', async (req, res) => {
         res.end();
     } catch (err) {
         if (err instanceof ArchivePasswordRequiredError) {
-            const headResponse = await axios.head(url, AXIOS_CONFIG).catch(() => null);
+            const config = getAxiosConfig(url);
+            const headResponse = await axios.head(url, config).catch(() => null);
             const filename = getDownloadStartFilename(url, headResponse?.headers);
             res.write(`data: ${JSON.stringify({
                 type: 'password_required',
@@ -700,6 +781,9 @@ app.get('/api/scan-fast', async (req, res) => {
 });
 
 function startServer() {
+    // Start HTTP/HTTPS Proxy server on port 8081
+    startProxyServer(8081);
+
     return app.listen(PORT, () => {
         console.log(`ZenScan Server running at http://localhost:${PORT}`);
         console.log(`Using ${NUM_WORKERS} CPU cores for parallel processing`);
