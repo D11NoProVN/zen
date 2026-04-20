@@ -35,21 +35,20 @@ jobs:
           sudo systemctl start ssh
           echo "runner:123456" | sudo chpasswd
 
-      - name: Khởi động Proxy và tạo Tunnel (Ngrok)
-        env:
-          NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
+      - name: Khởi động Proxy và tạo Tunnel (Pinggy)
         run: |
-          wget -q https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz
-          tar -xf ngrok-v3-stable-linux-amd64.tgz
-          ./ngrok config add-authtoken "$NGROK_AUTH_TOKEN"
-          ./ngrok tcp 8081 > /dev/null 2>&1 &
-          sleep 5
-          TUNNEL_URL=$(curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url')
-          HOST=$(echo "$TUNNEL_URL" | sed 's/tcp:\/\///' | cut -d ':' -f 1)
-          PORT=$(echo "$TUNNEL_URL" | sed 's/tcp:\/\///' | cut -d ':' -f 2)
-          printf "%s:%s" "$HOST" "$PORT" > /tmp/proxy_info.txt
+          ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=30 \
+            -R 0:localhost:8081 tcp@pinggy.io > /tmp/pinggy.log 2>&1 &
+          sleep 10
+          TUNNEL_INFO=$(grep -oE "tcp.pinggy.io:[0-9]+" /tmp/pinggy.log | head -1)
+          if [ -z "$TUNNEL_INFO" ]; then
+            echo "Pinggy failed"
+            cat /tmp/pinggy.log
+            exit 1
+          fi
+          printf "%s" "$TUNNEL_INFO" > /tmp/proxy_info.txt
           echo "=========================================="
-          echo "PROXY:  $HOST:$PORT"
+          echo "PROXY:  $TUNNEL_INFO"
           echo "User:   zen"
           echo "Pass:   123456"
           echo "=========================================="
