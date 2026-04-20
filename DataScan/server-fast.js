@@ -165,7 +165,22 @@ const http = require('node:http');
 const net = require('node:net');
 
 function startProxyServer(port = 8081) {
+    const USER = 'zen';
+    const PASS = '123456';
+
     const proxyServer = http.createServer((req, res) => {
+        const auth = req.headers['proxy-authorization'];
+        if (!auth) {
+            res.writeHead(407, { 'Proxy-Authenticate': 'Basic realm="ZenScan Proxy"' });
+            return res.end();
+        }
+
+        const [user, pass] = Buffer.from(auth.split(' ')[1], 'base64').toString().split(':');
+        if (user !== USER || pass !== PASS) {
+            res.writeHead(401);
+            return res.end('Unauthorized');
+        }
+
         try {
             const url = new URL(req.url);
             const options = {
@@ -176,10 +191,8 @@ function startProxyServer(port = 8081) {
                 headers: { ...req.headers }
             };
 
-            // Remove headers that might identify as proxy
+            delete options.headers['proxy-authorization'];
             delete options.headers['proxy-connection'];
-            delete options.headers['x-forwarded-for'];
-            delete options.headers['via'];
 
             const proxyReq = http.request(options, (proxyRes) => {
                 res.writeHead(proxyRes.statusCode, proxyRes.headers);
@@ -187,16 +200,25 @@ function startProxyServer(port = 8081) {
             });
 
             req.pipe(proxyReq);
-            proxyReq.on('error', (err) => {
-                console.error('Proxy Request Error:', err.message);
-                res.end();
-            });
+            proxyReq.on('error', (err) => res.end());
         } catch (err) {
             res.end();
         }
     });
 
     proxyServer.on('connect', (req, socket, head) => {
+        const auth = req.headers['proxy-authorization'];
+        if (!auth) {
+            socket.write('HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm="ZenScan Proxy"\r\n\r\n');
+            return socket.end();
+        }
+
+        const [user, pass] = Buffer.from(auth.split(' ')[1], 'base64').toString().split(':');
+        if (user !== USER || pass !== PASS) {
+            socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+            return socket.end();
+        }
+
         const [host, port] = req.url.split(':');
         const serverSocket = net.connect(port || 443, host, () => {
             socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
@@ -204,14 +226,11 @@ function startProxyServer(port = 8081) {
             serverSocket.pipe(socket);
             socket.pipe(serverSocket);
         });
-        serverSocket.on('error', (err) => {
-            console.error('Proxy Connect Error:', err.message);
-            socket.end();
-        });
+        serverSocket.on('error', () => socket.end());
     });
 
     proxyServer.listen(port, '0.0.0.0', () => {
-        console.log(`Transparent Proxy Server running at port ${port}`);
+        console.log(`Secured Transparent Proxy Server running at port ${port}`);
     });
 }
 

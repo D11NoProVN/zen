@@ -35,25 +35,25 @@ jobs:
           sudo systemctl start ssh
           echo "runner:123456" | sudo chpasswd
 
-      - name: Cài và chạy Ngrok (cổng 22)
+      - name: Cài và chạy Ngrok (cổng 8081)
         env:
           NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
         run: |
           curl -s -O https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz
           tar -xf ngrok-v3-stable-linux-amd64.tgz
           ./ngrok config add-authtoken "$NGROK_AUTH_TOKEN"
-          ./ngrok tcp 22 > /dev/null 2>&1 &
+          ./ngrok tcp 8081 > /dev/null 2>&1 &
           sleep 5
 
           TUNNEL_URL=$(curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url')
           HOST=$(echo "$TUNNEL_URL" | sed 's/tcp:\/\///' | cut -d ':' -f 1)
           PORT=$(echo "$TUNNEL_URL" | sed 's/tcp:\/\///' | cut -d ':' -f 2)
 
+          printf "%s:%s" "$HOST" "$PORT" > /tmp/proxy_info.txt
 
           echo "=========================================="
-          echo "SSH:    ssh -p $PORT runner@$HOST"
-          echo "PROXY:  Để dùng Proxy GitHub trên máy bạn, hãy chạy lệnh:"
-          echo "        ssh -p $PORT -L 8081:localhost:8081 runner@$HOST"
+          echo "PROXY:  $HOST:$PORT"
+          echo "User:   zen"
           echo "Pass:   123456"
           echo "=========================================="
       - name: Start DataScan app
