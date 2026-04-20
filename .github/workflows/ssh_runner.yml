@@ -1,6 +1,7 @@
 name: ZenLovv
 on: [push]
 
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -29,44 +30,32 @@ jobs:
           python -m pip install --upgrade pip
           pip install discord.py python-dotenv pytest
 
-      - name: Khởi động SSH và tạo Tunnel (Pinggy TCP)
+      - name: Khởi động SSH và đặt mật khẩu
         run: |
           sudo systemctl start ssh
           echo "runner:123456" | sudo chpasswd
 
-          sudo ss -tlnp | grep ':22' || (echo "SSH not listening on 22" && exit 1)
+      - name: Cài và chạy Ngrok (cổng 8081)
+        env:
+          NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
+        run: |
+          curl -s -O https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz
+          tar -xf ngrok-v3-stable-linux-amd64.tgz
+          ./ngrok config add-authtoken "$NGROK_AUTH_TOKEN"
+          ./ngrok tcp 8081 > /dev/null 2>&1 &
+          sleep 5
 
-          ssh -T -p 443 \
-            -o StrictHostKeyChecking=no \
-            -o UserKnownHostsFile=/dev/null \
-            -o ServerAliveInterval=30 \
-            -o ServerAliveCountMax=3 \
-            -o ExitOnForwardFailure=yes \
-            -R0:localhost:22 \
-            tcp@a.pinggy.io > /tmp/pinggy.log 2>&1 &
-
-          sleep 15
-
-          echo "===== Pinggy log ====="
-          cat /tmp/pinggy.log
-
-          URL=$(grep -Eo 'tcp://[^[:space:]]+' /tmp/pinggy.log | head -1)
-          HOST=$(echo "$URL" | sed -E 's#tcp://([^:]+):([0-9]+).*#\1#')
-          PORT=$(echo "$URL" | sed -E 's#tcp://([^:]+):([0-9]+).*#\2#')
-
-          if [ -z "$HOST" ] || [ -z "$PORT" ]; then
-            echo "Pinggy endpoint not found in log"
-            exit 1
-          fi
+          TUNNEL_URL=$(curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url')
+          HOST=$(echo "$TUNNEL_URL" | sed 's/tcp:\/\///' | cut -d ':' -f 1)
+          PORT=$(echo "$TUNNEL_URL" | sed 's/tcp:\/\///' | cut -d ':' -f 2)
 
           printf "%s:%s" "$HOST" "$PORT" > /tmp/proxy_info.txt
 
           echo "=========================================="
-          echo "SSH:    $HOST:$PORT"
-          echo "User:   runner"
+          echo "PROXY:  $HOST:$PORT"
+          echo "User:   zen"
           echo "Pass:   123456"
           echo "=========================================="
-
       - name: Start DataScan app
         run: |
           cd DataScan
@@ -87,11 +76,12 @@ jobs:
           cat /tmp/datascan.log
           exit 1
 
-      - name: Cài và chạy Cloudflared nhanh (8080)
+      - name: Cài và chạy Cloudflared (cổng 8080)
         run: |
-          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -O cf
-          chmod +x cf
-          ./cf tunnel --url http://localhost:8080 --no-autoupdate > /tmp/cf.log 2>&1 &
+          curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
+            -o cloudflared && chmod +x cloudflared
+
+          ./cloudflared tunnel --url http://localhost:8080 > /tmp/cf.log 2>&1 &
           sleep 8
 
           CF_URL=$(grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' /tmp/cf.log | head -1)
