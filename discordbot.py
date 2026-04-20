@@ -50,7 +50,7 @@ class TunnelBot(discord.Client):
         @app_commands.describe(port="Port tunnel cần lấy")
         @app_commands.choices(port=[
             app_commands.Choice(name="8080 (Web UI)", value="8080"),
-            app_commands.Choice(name="8081 (Proxy)", value="8081")
+            app_commands.Choice(name="8081 (SSH Proxy)", value="8081")
         ])
         async def get_tunnel(
             interaction: discord.Interaction, port: app_commands.Choice[str]
@@ -60,14 +60,14 @@ class TunnelBot(discord.Client):
                 message = build_get_response(port.value, tunnel_url)
             else:
                 if not PROXY_INFO_FILE.exists():
-                    message = "Chưa có thông tin Proxy 8081. Đợi tý mày!"
+                    message = "Chưa có thông tin SSH Proxy. Đợi tý mày!"
                 else:
                     info = PROXY_INFO_FILE.read_text().strip()
                     host, p = info.split(':')
-                    message = f"**Proxy GitHub của mày đây:**\nIP/Host: `{host}`\nPort: `{p}`\nUser: `zen` | Pass: `123456`"
+                    cmd = f"ssh -p {p} -L 8081:localhost:8081 runner@{host}"
+                    message = f"**Lệnh SSH Proxy Pinggy của mày đây:**\n```bash\n{cmd}\n```\nPass: `123456`"
 
-            await interaction.response.send_message(message)
-        await self.tree.sync(guild=guild)
+            await interaction.response.send_message(message)        await self.tree.sync(guild=guild)
 
 
 if __name__ == "__main__":
