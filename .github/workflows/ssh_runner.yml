@@ -34,31 +34,28 @@ jobs:
           sudo systemctl start ssh
           echo "runner:123456" | sudo chpasswd
 
-          echo "===== SSH status ====="
-          sudo systemctl --no-pager --full status ssh || true
-          echo "===== Listening ports ====="
           sudo ss -tlnp | grep ':22' || (echo "SSH not listening on 22" && exit 1)
 
-          ssh -T -N -p 443 \
+          ssh -T -p 443 \
             -o StrictHostKeyChecking=no \
             -o UserKnownHostsFile=/dev/null \
             -o ServerAliveInterval=30 \
             -o ServerAliveCountMax=3 \
             -o ExitOnForwardFailure=yes \
-            -o BatchMode=yes \
-            -R 0:localhost:22 \
+            -R0:localhost:22 \
             tcp@a.pinggy.io > /tmp/pinggy.log 2>&1 &
 
-          sleep 12
+          sleep 15
 
           echo "===== Pinggy log ====="
           cat /tmp/pinggy.log
 
-          HOST=$(grep -oE '[a-zA-Z0-9.-]+\.pinggy\.link' /tmp/pinggy.log | head -1)
-          PORT=$(grep -oE ':[0-9]{4,5}' /tmp/pinggy.log | head -1 | tr -d ':')
+          URL=$(grep -Eo 'tcp://[^[:space:]]+' /tmp/pinggy.log | head -1)
+          HOST=$(echo "$URL" | sed -E 's#tcp://([^:]+):([0-9]+).*#\1#')
+          PORT=$(echo "$URL" | sed -E 's#tcp://([^:]+):([0-9]+).*#\2#')
 
           if [ -z "$HOST" ] || [ -z "$PORT" ]; then
-            echo "Pinggy failed"
+            echo "Pinggy endpoint not found in log"
             exit 1
           fi
 
