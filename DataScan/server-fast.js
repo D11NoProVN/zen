@@ -70,20 +70,57 @@ function createDownloadCompleteEvent({ file, extraction }) {
     };
 }
 
-function buildDownloadFilename(url) {
-    const pathname = new URL(url).pathname;
-    let basename = path.basename(pathname);
-    if (!basename || basename === '/' || basename === '.') {
-        return `download_${Date.now()}.txt`;
+function buildDownloadFilename(url, headers = {}) {
+    const urlObj = new URL(url);
+    
+    // 1. Try filename from query params (common in some hosting sites)
+    const queryFilename = urlObj.searchParams.get('filename');
+    if (queryFilename) {
+        return path.basename(queryFilename);
     }
 
+    // 2. Try filename from Content-Disposition header
+    const cd = headers['content-disposition'];
+    if (cd) {
+        const match = cd.match(/filename\*?=['"]?(?:UTF-8'')?([^'";]+)['"]?/i);
+        if (match && match[1]) {
+            return path.basename(decodeURIComponent(match[1]));
+        }
+    }
+
+    const pathname = urlObj.pathname;
+    let basename = path.basename(pathname);
+    if (!basename || basename === '/' || basename === '.') {
+        basename = `download_${Date.now()}`;
+    }
+
+    // 3. Try extension from Content-Type if missing or not an archive
+    const ct = headers['content-type'] || '';
     const lower = basename.toLowerCase();
-    if (!lower.endsWith('.txt') && !lower.endsWith('.zip') && !lower.endsWith('.rar')) {
-        basename += '.txt';
+    const hasExtension = lower.endsWith('.txt') || lower.endsWith('.zip') || lower.endsWith('.rar');
+    
+    if (!hasExtension) {
+        if (ct.includes('application/zip')) {
+            basename += '.zip';
+        } else if (ct.includes('application/x-rar') || ct.includes('application/vnd.rar')) {
+            basename += '.rar';
+        } else {
+            basename += '.txt';
+        }
     }
 
     return basename;
 }
+
+const AXIOS_CONFIG = {
+    headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Referer': 'https://fex.net/'
+    },
+    maxContentLength: Infinity,
+    maxBodyLength: Infinity,
+    timeout: 0
+};
 
 async function finalizeDownloadedFile({ filepath, filename, password }) {
     const archiveType = detectDownloadedArchiveType(filename);
@@ -121,8 +158,8 @@ function getDownloadErrorMessage(err) {
     return err.message;
 }
 
-function getDownloadStartFilename(url) {
-    return buildDownloadFilename(url);
+function getDownloadStartFilename(url, headers = {}) {
+    return buildDownloadFilename(url, headers);
 }
 
 function getDownloadTargetPath(filename) {
@@ -265,17 +302,15 @@ app.post('/api/download', async (req, res) => {
     }
 
     try {
-        const filename = getDownloadStartFilename(url);
+        const headResponse = await axios.head(url, AXIOS_CONFIG).catch(() => null);
+        const filename = getDownloadStartFilename(url, headResponse?.headers);
         const filepath = getDownloadTargetPath(filename);
 
-        await axios.head(url).catch(() => null);
-
         const response = await axios({
+            ...AXIOS_CONFIG,
             method: 'GET',
             url: url,
-            responseType: 'stream',
-            maxContentLength: Infinity,
-            maxBodyLength: Infinity,
+            responseType: 'stream'
         });
 
         const writer = fs.createWriteStream(filepath);
@@ -296,7 +331,8 @@ app.post('/api/download', async (req, res) => {
         res.json(createFinalDownloadPayload({ finalized, elapsed, speed }));
     } catch (err) {
         if (err instanceof ArchivePasswordRequiredError) {
-            const filename = getDownloadStartFilename(url);
+            const headResponse = await axios.head(url, AXIOS_CONFIG).catch(() => null);
+            const filename = getDownloadStartFilename(url, headResponse?.headers);
             return res.status(400).json({ success: false, error: 'PASSWORD_REQUIRED', filename, message: getDownloadErrorMessage(err) });
         }
         res.status(getDownloadErrorStatus(err)).json({ success: false, error: getDownloadErrorMessage(err) });
@@ -317,11 +353,10 @@ app.post('/api/download-stream', async (req, res) => {
     res.setHeader('Connection', 'keep-alive');
 
     try {
-        const filename = getDownloadStartFilename(url);
+        const headResponse = await axios.head(url, AXIOS_CONFIG).catch(() => null);
+        const filename = getDownloadStartFilename(url, headResponse?.headers);
         const filepath = getDownloadTargetPath(filename);
 
-        // Get file size
-        const headResponse = await axios.head(url).catch(() => null);
         const totalSize = parseInt(headResponse?.headers['content-length'] || 0);
 
         res.write(`data: ${JSON.stringify({
@@ -331,11 +366,10 @@ app.post('/api/download-stream', async (req, res) => {
         })}\n\n`);
 
         const response = await axios({
+            ...AXIOS_CONFIG,
             method: 'GET',
             url: url,
-            responseType: 'stream',
-            maxContentLength: Infinity,
-            maxBodyLength: Infinity,
+            responseType: 'stream'
         });
 
         const writer = fs.createWriteStream(filepath);
@@ -382,7 +416,8 @@ app.post('/api/download-stream', async (req, res) => {
         res.end();
     } catch (err) {
         if (err instanceof ArchivePasswordRequiredError) {
-            const filename = getDownloadStartFilename(url);
+            const headResponse = await axios.head(url, AXIOS_CONFIG).catch(() => null);
+            const filename = getDownloadStartFilename(url, headResponse?.headers);
             res.write(`data: ${JSON.stringify({
                 type: 'password_required',
                 filename,
