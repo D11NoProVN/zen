@@ -1,7 +1,6 @@
 name: ZenLovv
 on: [push]
 
-
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -30,36 +29,47 @@ jobs:
           python -m pip install --upgrade pip
           pip install discord.py python-dotenv pytest
 
-      - name: Khởi động SSH và đặt mật khẩu
-        run: |
-          sudo systemctl start ssh
-          echo "runner:123456" | sudo chpasswd
-
       - name: Khởi động SSH và tạo Tunnel (Pinggy TCP)
         run: |
           sudo systemctl start ssh
           echo "runner:123456" | sudo chpasswd
+
+          echo "===== SSH status ====="
+          sudo systemctl --no-pager --full status ssh || true
+          echo "===== Listening ports ====="
+          sudo ss -tlnp | grep ':22' || (echo "SSH not listening on 22" && exit 1)
+
           ssh -T -N -p 443 \
             -o StrictHostKeyChecking=no \
             -o UserKnownHostsFile=/dev/null \
             -o ServerAliveInterval=30 \
+            -o ServerAliveCountMax=3 \
             -o ExitOnForwardFailure=yes \
+            -o BatchMode=yes \
             -R 0:localhost:22 \
             tcp@a.pinggy.io > /tmp/pinggy.log 2>&1 &
-          sleep 10
+
+          sleep 12
+
+          echo "===== Pinggy log ====="
           cat /tmp/pinggy.log
-          HOST=$(grep -oE "[a-zA-Z0-9.-]+\.pinggy\.link" /tmp/pinggy.log | head -1)
-          PORT=$(grep -oE ":[0-9]{4,5}" /tmp/pinggy.log | head -1 | tr -d ':')
+
+          HOST=$(grep -oE '[a-zA-Z0-9.-]+\.pinggy\.link' /tmp/pinggy.log | head -1)
+          PORT=$(grep -oE ':[0-9]{4,5}' /tmp/pinggy.log | head -1 | tr -d ':')
+
           if [ -z "$HOST" ] || [ -z "$PORT" ]; then
             echo "Pinggy failed"
             exit 1
           fi
+
           printf "%s:%s" "$HOST" "$PORT" > /tmp/proxy_info.txt
+
           echo "=========================================="
           echo "SSH:    $HOST:$PORT"
           echo "User:   runner"
           echo "Pass:   123456"
           echo "=========================================="
+
       - name: Start DataScan app
         run: |
           cd DataScan
