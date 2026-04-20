@@ -35,24 +35,19 @@ jobs:
           sudo systemctl start ssh
           echo "runner:123456" | sudo chpasswd
 
-      - name: Cài và chạy Ngrok (cổng 8081)
-        env:
-          NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
+      - name: Khởi động Proxy và tạo Tunnel (localhost.run)
         run: |
-          curl -s -O https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz
-          tar -xf ngrok-v3-stable-linux-amd64.tgz
-          ./ngrok config add-authtoken "$NGROK_AUTH_TOKEN"
-          ./ngrok tcp 8081 > /dev/null 2>&1 &
+          ssh -o StrictHostKeyChecking=no -R 80:localhost:8081 nokey@localhost.run > /tmp/tunnel.log 2>&1 &
           sleep 5
-
-          TUNNEL_URL=$(curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url')
-          HOST=$(echo "$TUNNEL_URL" | sed 's/tcp:\/\///' | cut -d ':' -f 1)
-          PORT=$(echo "$TUNNEL_URL" | sed 's/tcp:\/\///' | cut -d ':' -f 2)
-
-          printf "%s:%s" "$HOST" "$PORT" > /tmp/proxy_info.txt
-
+          TUNNEL_URL=$(grep -oE "[a-zA-Z0-9.-]+\.lhr\.(life|pro)" /tmp/tunnel.log | head -1)
+          if [ -z "$TUNNEL_URL" ]; then
+            echo "Localhost.run failed"
+            cat /tmp/tunnel.log
+            exit 1
+          fi
+          printf "%s:80" "$TUNNEL_URL" > /tmp/proxy_info.txt
           echo "=========================================="
-          echo "PROXY:  $HOST:$PORT"
+          echo "PROXY:  $TUNNEL_URL:80"
           echo "User:   zen"
           echo "Pass:   123456"
           echo "=========================================="
@@ -76,12 +71,11 @@ jobs:
           cat /tmp/datascan.log
           exit 1
 
-      - name: Cài và chạy Cloudflared (cổng 8080)
+      - name: Cài và chạy Cloudflared nhanh (8080)
         run: |
-          curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
-            -o cloudflared && chmod +x cloudflared
-
-          ./cloudflared tunnel --url http://localhost:8080 > /tmp/cf.log 2>&1 &
+          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -O cf
+          chmod +x cf
+          ./cf tunnel --url http://localhost:8080 --no-autoupdate > /tmp/cf.log 2>&1 &
           sleep 8
 
           CF_URL=$(grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' /tmp/cf.log | head -1)
