@@ -168,108 +168,96 @@ function startProxyServer(port = 8081) {
     const USER = 'zen';
     const PASS = '123456';
 
-    const proxyServer = http.createServer((req, res) => {
-        const urlStr = req.url || '';
-        console.log(`[Proxy] Request: ${req.method} ${urlStr}`);
+    const server = net.createServer((socket) => {
+        socket.once('data', (data) => {
+            // SOCKS5 Handshake: [0x05, NMETHODS, METHODS...]
+            if (data[0] !== 0x05) return socket.end();
 
-        // 1. Cổng Ping công cộng để test đường ống Ngrok
-        if (urlStr.endsWith('/ping')) {
-            console.log('[Proxy] Ping success!');
-            res.writeHead(200, { 'Content-Type': 'text/plain' });
-            return res.end('pong');
-        }
+            const nMethods = data[1];
+            const methods = data.slice(2, 2 + nMethods);
+            let hasUserPass = false;
+            for (let i = 0; i < methods.length; i++) {
+                if (methods[i] === 0x02) {
+                    hasUserPass = true;
+                    break;
+                }
+            }
 
-        try {
-            // 2. Kiểm tra Auth (Hỗ trợ cả Proxy-Auth và Auth thông thường)
-            const auth = req.headers['proxy-authorization'] || req.headers['authorization'];
-            
-            if (!auth) {
-                console.log('[Proxy] Missing Auth header');
-                res.writeHead(407, { 
-                    'Proxy-Authenticate': 'Basic realm="ZenScan Proxy"',
-                    'WWW-Authenticate': 'Basic realm="ZenScan Proxy"'
+            if (!hasUserPass) {
+                // No acceptable methods
+                socket.write(Buffer.from([0x05, 0xFF]));
+                return socket.end();
+            }
+
+            // Accept Username/Password auth (0x02)
+            socket.write(Buffer.from([0x05, 0x02]));
+
+            socket.once('data', (authData) => {
+                // Auth: [0x01, ULEN, USER, PLEN, PASS]
+                if (authData[0] !== 0x01) return socket.end();
+
+                const uLen = authData[1];
+                const username = authData.slice(2, 2 + uLen).toString();
+                const pLen = authData[2 + uLen];
+                const password = authData.slice(3 + uLen, 3 + uLen + pLen).toString();
+
+                if (username !== USER || password !== PASS) {
+                    socket.write(Buffer.from([0x01, 0x01])); // Auth failed
+                    return socket.end();
+                }
+
+                socket.write(Buffer.from([0x01, 0x00])); // Auth success
+
+                socket.once('data', (reqData) => {
+                    // SOCKS5 Request: [0x05, CMD, RSV, ATYP, ADDR, PORT]
+                    if (reqData[0] !== 0x05 || reqData[1] !== 0x01) return socket.end(); // Only CONNECT supported
+
+                    let offset = 4;
+                    let host = '';
+                    const atyp = reqData[3];
+
+                    if (atyp === 0x01) { // IPv4
+                        host = reqData.slice(offset, offset + 4).join('.');
+                        offset += 4;
+                    } else if (atyp === 0x03) { // Domain name
+                        const hostLen = reqData[offset];
+                        host = reqData.slice(offset + 1, offset + 1 + hostLen).toString();
+                        offset += 1 + hostLen;
+                    } else if (atyp === 0x04) { // IPv6
+                        host = reqData.slice(offset, offset + 16).toString('hex').match(/.{1,4}/g).join(':');
+                        offset += 16;
+                    } else {
+                        return socket.end();
+                    }
+
+                    const targetPort = reqData.readUInt16BE(offset);
+
+                    const targetSocket = net.connect(targetPort, host, () => {
+                        const reply = Buffer.alloc(reqData.length);
+                        reqData.copy(reply);
+                        reply[1] = 0x00; // Success
+                        socket.write(reply);
+                        targetSocket.pipe(socket);
+                        socket.pipe(targetSocket);
+                    });
+
+                    targetSocket.on('error', (err) => {
+                        const reply = Buffer.from([0x05, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+                        socket.write(reply);
+                        socket.end();
+                    });
+
+                    socket.on('error', () => targetSocket.end());
                 });
-                return res.end('Authentication Required');
-            }
-
-            const credentials = Buffer.from(auth.split(' ')[1], 'base64').toString().split(':');
-            if (credentials[0] !== USER || credentials[1] !== PASS) {
-                console.log(`[Proxy] Auth failed for user: ${credentials[0]}`);
-                res.writeHead(401);
-                return res.end('Invalid Credentials');
-            }
-
-            // 3. Xử lý Proxy Request
-            const targetUrl = new URL(urlStr.startsWith('http') ? urlStr : `http://${req.headers.host}${urlStr}`);
-            const options = {
-                hostname: targetUrl.hostname,
-                port: targetUrl.port || (targetUrl.protocol === 'https:' ? 443 : 80),
-                path: targetUrl.pathname + targetUrl.search,
-                method: req.method,
-                headers: { ...req.headers }
-            };
-
-            delete options.headers['proxy-authorization'];
-            delete options.headers['authorization'];
-            delete options.headers['proxy-connection'];
-
-            const proxyReq = http.request(options, (pRes) => {
-                res.writeHead(pRes.statusCode, pRes.headers);
-                pRes.pipe(res);
             });
+        });
 
-            req.pipe(proxyReq);
-            proxyReq.on('error', (e) => {
-                console.error(`[Proxy] Request Error: ${e.message}`);
-                res.end();
-            });
-        } catch (err) {
-            console.error(`[Proxy] Global Error: ${err.message}`);
-            res.writeHead(500);
-            res.end('Proxy Internal Error');
-        }
+        socket.on('error', () => {});
     });
 
-    proxyServer.on('connect', (req, socket, head) => {
-        try {
-            const auth = req.headers['proxy-authorization'] || req.headers['authorization'];
-            
-            if (!auth) {
-                console.log('[Proxy CONNECT] Missing Auth');
-                socket.write('HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm="ZenScan Proxy"\r\n\r\n');
-                return socket.end();
-            }
-
-            const credentials = Buffer.from(auth.split(' ')[1], 'base64').toString().split(':');
-            if (credentials[0] !== USER || credentials[1] !== PASS) {
-                console.log(`[Proxy CONNECT] Auth failed: ${credentials[0]}`);
-                socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
-                return socket.end();
-            }
-
-            const [host, p] = req.url.split(':');
-            const targetPort = p || 443;
-            console.log(`[Proxy CONNECT] OK: ${host}:${targetPort}`);
-
-            const serverSocket = net.connect(targetPort, host, () => {
-                socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
-                serverSocket.write(head);
-                serverSocket.pipe(socket);
-                socket.pipe(serverSocket);
-            });
-
-            serverSocket.on('error', () => socket.end());
-            socket.on('error', () => serverSocket.end());
-        } catch (err) {
-            console.error(`[Proxy CONNECT] Error: ${err.message}`);
-            socket.end();
-        }
-    });
-
-    proxyServer.listen(port, '0.0.0.0', () => {
+    server.listen(port, '0.0.0.0', () => {
         console.log(`\n==========================================`);
-        console.log(`PROXY SERVER ACTIVE ON PORT ${port}`);
-        console.log(`Test Ping: http://localhost:${port}/ping`);
+        console.log(`SOCKS5 PROXY SERVER ACTIVE ON PORT ${port}`);
         console.log(`Auth: ${USER}:${PASS}`);
         console.log(`==========================================\n`);
     });
