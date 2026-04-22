@@ -1,4 +1,4 @@
-// Download Manager Script
+// Download Manager Script - Multi-Link Edition
 const $ = id => document.getElementById(id);
 
 const el = {
@@ -10,24 +10,10 @@ const el = {
     fileCount: $('fileCount'),
     selectAllBtn: $('selectAllBtn'),
     deleteSelectedBtn: $('deleteSelectedBtn'),
-    downloadProgress: $('downloadProgress'),
-    progressFilename: $('progressFilename'),
-    progressBarFill: $('progressBarFill'),
-    progressDownloaded: $('progressDownloaded'),
-    progressTotal: $('progressTotal'),
-    progressSpeed: $('progressSpeed'),
-    progressPercent: $('progressPercent'),
-    cancelDownloadBtn: $('cancelDownloadBtn'),
-    toastContainer: $('toastContainer'),
-    passwordModal: $('passwordModal'),
-    modalPasswordInput: $('modalPasswordInput'),
-    modalCancelBtn: $('modalCancelBtn'),
-    modalSubmitBtn: $('modalSubmitBtn'),
-    passwordError: $('passwordError')
+    activeDownloadsContainer: $('activeDownloadsContainer'),
+    toastContainer: $('toastContainer')
 };
 
-let currentDownload = null;
-let currentArchiveFilename = null;
 let selectedFiles = new Set();
 
 // Toast notification
@@ -51,6 +37,7 @@ function escapeHtml(str) {
 }
 
 function formatBytes(bytes) {
+    if (!bytes || isNaN(bytes)) return '0 B';
     if (bytes < 1024) return bytes + ' B';
     if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
     if (bytes < 1073741824) return (bytes / 1048576).toFixed(2) + ' MB';
@@ -58,6 +45,7 @@ function formatBytes(bytes) {
 }
 
 function formatSpeed(bytesPerSecond) {
+    if (!bytesPerSecond || isNaN(bytesPerSecond)) return '0 B/s';
     if (bytesPerSecond < 1048576) return (bytesPerSecond / 1024).toFixed(1) + ' KB/s';
     return (bytesPerSecond / 1048576).toFixed(2) + ' MB/s';
 }
@@ -150,24 +138,98 @@ function updateDeleteButton() {
     `;
 }
 
-// Download file with progress
-async function downloadFile() {
-    const url = el.urlInput.value.trim();
+// Multi-Download Trigger
+async function downloadFiles() {
+    const rawUrls = el.urlInput.value.trim();
     const proxy = el.proxyInput.value.trim();
 
-    if (!url) {
-        notify('Vui lòng nhập URL!', 'error');
+    if (!rawUrls) {
+        notify('Vui lòng nhập ít nhất một URL!', 'error');
         return;
     }
 
-    // Show progress
-    el.downloadProgress.classList.add('active');
-    el.progressFilename.textContent = 'Đang kết nối...';
-    el.progressBarFill.style.width = '0%';
-    el.progressDownloaded.textContent = '0 MB';
-    el.progressTotal.textContent = '0 MB';
-    el.progressSpeed.textContent = '0 MB/s';
-    el.progressPercent.textContent = '0%';
+    const urls = rawUrls.split('\n').map(u => u.trim()).filter(u => u.length > 0);
+    el.urlInput.value = ''; // Clear input
+
+    notify(`Bắt đầu tải ${urls.length} file...`, 'info');
+
+    urls.forEach(url => {
+        startSingleDownload(url, proxy);
+    });
+}
+
+async function startSingleDownload(url, proxy) {
+    const downloadId = 'dl_' + Math.random().toString(36).substr(2, 9);
+    
+    // Create UI for this specific download
+    const dlElement = document.createElement('div');
+    dlElement.className = 'download-progress';
+    dlElement.id = downloadId;
+    dlElement.innerHTML = `
+        <div class="progress-header">
+            <div class="progress-filename loading">
+                <i class="fas fa-spinner fa-spin"></i>
+                <span class="progress-filename-text">${escapeHtml(url)}</span>
+            </div>
+            <button class="btn btn-ghost cancel-btn" style="padding: 0.2rem 0.5rem; font-size: 0.6rem;">
+                <i class="fas fa-xmark"></i>
+            </button>
+        </div>
+        <div class="progress-bar-container">
+            <div class="progress-bar-fill" style="width: 0%"></div>
+        </div>
+        <div class="progress-stats">
+            <div class="progress-stat">
+                <span class="progress-stat-label">Đã tải</span>
+                <span class="progress-stat-value downloaded-text">0 B</span>
+            </div>
+            <div class="progress-stat">
+                <span class="progress-stat-label">Tốc độ</span>
+                <span class="progress-stat-value speed-text">0 B/s</span>
+            </div>
+            <div class="progress-stat">
+                <span class="progress-stat-label">Tiến độ</span>
+                <span class="progress-stat-value percent-text">0%</span>
+            </div>
+        </div>
+        <!-- Inline Password Box -->
+        <div class="inline-password-box">
+            <div class="inline-password-row">
+                <input type="password" class="inline-password-input" placeholder="Nhập mật khẩu giải nén...">
+                <button class="btn btn-primary inline-submit-btn" style="padding: 0.3rem 0.6rem; font-size: 0.7rem;">
+                    <i class="fas fa-unlock"></i>
+                </button>
+            </div>
+            <div class="inline-password-error">Mật khẩu sai, thử lại!</div>
+        </div>
+    `;
+    
+    el.activeDownloadsContainer.prepend(dlElement);
+
+    const ui = {
+        element: dlElement,
+        filename: dlElement.querySelector('.progress-filename-text'),
+        filenameContainer: dlElement.querySelector('.progress-filename'),
+        bar: dlElement.querySelector('.progress-bar-fill'),
+        downloaded: dlElement.querySelector('.downloaded-text'),
+        speed: dlElement.querySelector('.speed-text'),
+        percent: dlElement.querySelector('.percent-text'),
+        cancelBtn: dlElement.querySelector('.cancel-btn'),
+        passBox: dlElement.querySelector('.inline-password-box'),
+        passInput: dlElement.querySelector('.inline-password-input'),
+        passSubmit: dlElement.querySelector('.inline-submit-btn'),
+        passError: dlElement.querySelector('.inline-password-error')
+    };
+
+    let active = true;
+    let reader = null;
+
+    ui.cancelBtn.addEventListener('click', () => {
+        active = false;
+        if (reader) reader.cancel();
+        dlElement.style.opacity = '0.5';
+        setTimeout(() => dlElement.remove(), 1000);
+    });
 
     try {
         const response = await fetch('/api/download-stream', {
@@ -175,19 +237,15 @@ async function downloadFile() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ url, proxy })
         });
-        if (!response.ok) {
-            throw new Error('Download failed');
-        }
+        
+        if (!response.ok) throw new Error('Kết nối thất bại');
 
-        const reader = response.body.getReader();
+        reader = response.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
 
-        currentDownload = { reader, active: true };
-
-        while (currentDownload.active) {
+        while (active) {
             const { done, value } = await reader.read();
-
             if (done) break;
 
             buffer += decoder.decode(value, { stream: true });
@@ -196,81 +254,108 @@ async function downloadFile() {
 
             for (const line of lines) {
                 if (line.startsWith('data: ')) {
-                    const data = JSON.parse(line.slice(6));
-                    handleDownloadProgress(data);
+                    try {
+                        const data = JSON.parse(line.slice(6));
+                        handleSingleProgress(data, ui, downloadId);
+                    } catch (e) {}
                 }
             }
         }
-
-        currentDownload = null;
     } catch (err) {
-        notify('Lỗi: ' + err.message, 'error');
-        el.downloadProgress.classList.remove('active');
-        currentDownload = null;
+        if (active) {
+            ui.element.classList.add('error');
+            ui.filename.textContent = 'Lỗi: ' + err.message;
+            ui.filenameContainer.classList.remove('loading');
+            ui.filenameContainer.querySelector('i').className = 'fas fa-circle-exclamation';
+        }
     }
 }
 
-function getDownloadSuccessMessage(data) {
-    if (data.extraction) {
-        return `Đã giải nén ${data.extraction.extractedCount} file .txt từ archive ${data.extraction.archiveType}`;
-    }
-
-    return `Đã tải thành công: ${data.file.name} (${formatSpeed(data.file.speed)})`;
-}
-
-function handleDownloadProgress(data) {
+function handleSingleProgress(data, ui, downloadId) {
     if (data.type === 'start') {
-        el.progressFilename.textContent = data.filename;
-        el.progressTotal.textContent = formatBytes(data.totalSize);
+        ui.filename.textContent = data.filename;
+        ui.filenameContainer.classList.remove('loading');
+        ui.filenameContainer.querySelector('i').className = 'fas fa-file-arrow-down';
     } else if (data.type === 'progress') {
-        el.progressDownloaded.textContent = formatBytes(data.downloaded);
-        el.progressSpeed.textContent = formatSpeed(data.speed);
-        el.progressPercent.textContent = data.progress.toFixed(1) + '%';
-        el.progressBarFill.style.width = data.progress + '%';
+        ui.downloaded.textContent = formatBytes(data.downloaded);
+        ui.speed.textContent = formatSpeed(data.speed);
+        ui.percent.textContent = Math.round(data.progress) + '%';
+        ui.bar.style.width = data.progress + '%';
     } else if (data.type === 'complete') {
-        el.progressPercent.textContent = '100%';
-        el.progressBarFill.style.width = '100%';
+        ui.element.classList.add('completed');
+        ui.bar.style.width = '100%';
+        ui.percent.textContent = '100%';
+        ui.filenameContainer.querySelector('i').className = 'fas fa-check-circle';
+        ui.filenameContainer.querySelector('i').style.color = '#2ecc71';
+        
+        let msg = data.extraction 
+            ? `Giải nén xong ${data.extraction.extractedCount} file`
+            : 'Hoàn tất!';
+        ui.speed.textContent = msg;
 
         setTimeout(() => {
-            el.downloadProgress.classList.remove('active');
-            notify(getDownloadSuccessMessage(data), 'success');
-            el.urlInput.value = '';
-            loadFiles();
-        }, 1000);
+            ui.element.style.opacity = '0';
+            setTimeout(() => {
+                ui.element.remove();
+                loadFiles();
+            }, 500);
+        }, 3000);
+
     } else if (data.type === 'password_required') {
-        currentArchiveFilename = data.filename;
-        el.modalPasswordInput.value = '';
-        el.passwordError.style.display = 'none';
-        el.passwordModal.classList.add('active');
-        el.modalPasswordInput.focus();
+        ui.element.classList.add('password-needed');
+        ui.passBox.classList.add('active');
+        ui.filenameContainer.querySelector('i').className = 'fas fa-key';
+        ui.speed.textContent = 'Yêu cầu mật khẩu';
+
+        const submitPass = () => {
+            const password = ui.passInput.value.trim();
+            if (!password) return;
+
+            ui.passSubmit.disabled = true;
+            ui.passSubmit.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+            ui.passError.style.display = 'none';
+
+            fetch('/api/extract', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ filename: data.filename, password })
+            })
+            .then(res => res.json())
+            .then(resData => {
+                if (resData.success) {
+                    ui.passBox.classList.remove('active');
+                    handleSingleProgress({ ...resData, type: 'complete' }, ui, downloadId);
+                } else {
+                    ui.passSubmit.disabled = false;
+                    ui.passSubmit.innerHTML = '<i class="fas fa-unlock"></i>';
+                    ui.passError.style.display = 'block';
+                    ui.passInput.value = '';
+                    ui.passInput.focus();
+                }
+            })
+            .catch(() => {
+                ui.passSubmit.disabled = false;
+                ui.passSubmit.innerHTML = '<i class="fas fa-unlock"></i>';
+            });
+        };
+
+        ui.passSubmit.onclick = submitPass;
+        ui.passInput.onkeypress = e => { if (e.key === 'Enter') submitPass(); };
+
     } else if (data.type === 'error') {
-        notify('Lỗi tải file: ' + data.message, 'error');
-        el.downloadProgress.classList.remove('active');
+        ui.element.classList.add('error');
+        ui.filename.textContent = data.message;
+        ui.filenameContainer.querySelector('i').className = 'fas fa-circle-exclamation';
+        ui.filenameContainer.querySelector('i').style.color = '#ff6b6b';
     }
 }
-
-// Cancel download
-el.cancelDownloadBtn.addEventListener('click', () => {
-    if (currentDownload) {
-        currentDownload.active = false;
-        currentDownload.reader.cancel();
-        currentDownload = null;
-        el.downloadProgress.classList.remove('active');
-        notify('Đã hủy tải file!', 'info');
-    }
-});
 
 // Delete file
 async function deleteFile(filename) {
     if (!confirm(`Xóa file "${filename}"?`)) return;
-
     try {
-        const res = await fetch(`/api/files/${encodeURIComponent(filename)}`, {
-            method: 'DELETE'
-        });
-
+        const res = await fetch(`/api/files/${encodeURIComponent(filename)}`, { method: 'DELETE' });
         const data = await res.json();
-
         if (data.success) {
             notify('Đã xóa file!', 'success');
             selectedFiles.delete(filename);
@@ -286,38 +371,16 @@ async function deleteFile(filename) {
 // Delete selected files
 el.deleteSelectedBtn.addEventListener('click', async () => {
     if (selectedFiles.size === 0) return;
-
     if (!confirm(`Xóa ${selectedFiles.size} file đã chọn?`)) return;
-
     const files = Array.from(selectedFiles);
-    let success = 0;
-    let failed = 0;
-
     for (const filename of files) {
         try {
-            const res = await fetch(`/api/files/${encodeURIComponent(filename)}`, {
-                method: 'DELETE'
-            });
-
+            const res = await fetch(`/api/files/${encodeURIComponent(filename)}`, { method: 'DELETE' });
             const data = await res.json();
-            if (data.success) {
-                success++;
-                selectedFiles.delete(filename);
-            } else {
-                failed++;
-            }
-        } catch (err) {
-            failed++;
-        }
+            if (data.success) selectedFiles.delete(filename);
+        } catch (err) {}
     }
-
-    if (success > 0) {
-        notify(`Đã xóa ${success} file!`, 'success');
-    }
-    if (failed > 0) {
-        notify(`Lỗi xóa ${failed} file!`, 'error');
-    }
-
+    notify(`Đã xử lý xong việc xóa file!`, 'info');
     loadFiles();
     updateDeleteButton();
 });
@@ -326,92 +389,19 @@ el.deleteSelectedBtn.addEventListener('click', async () => {
 el.selectAllBtn.addEventListener('click', () => {
     const checkboxes = el.filesContainer.querySelectorAll('.file-checkbox');
     const allSelected = checkboxes.length > 0 && Array.from(checkboxes).every(cb => cb.checked);
-
     checkboxes.forEach(cb => {
         const filename = cb.dataset.filename;
         const card = el.filesContainer.querySelector(`.file-card[data-filename="${filename}"]`);
-
-        if (allSelected) {
-            cb.checked = false;
-            selectedFiles.delete(filename);
-            card.classList.remove('selected');
-        } else {
-            cb.checked = true;
-            selectedFiles.add(filename);
-            card.classList.add('selected');
-        }
+        cb.checked = !allSelected;
+        if (!allSelected) { selectedFiles.add(filename); card.classList.add('selected'); }
+        else { selectedFiles.delete(filename); card.classList.remove('selected'); }
     });
-
-    el.selectAllBtn.innerHTML = allSelected
-        ? '<i class="fas fa-check-double"></i> Chọn tất cả'
-        : '<i class="fas fa-times"></i> Bỏ chọn tất cả';
-
     updateDeleteButton();
 });
 
 // Event listeners
-el.downloadBtn.addEventListener('click', downloadFile);
+el.downloadBtn.addEventListener('click', downloadFiles);
 el.refreshBtn.addEventListener('click', loadFiles);
-el.urlInput.addEventListener('keypress', e => {
-    if (e.key === 'Enter') downloadFile();
-});
-
-// Modal Logic
-el.modalCancelBtn.addEventListener('click', () => {
-    el.passwordModal.classList.remove('active');
-    notify('Đã hủy giải nén', 'info');
-    el.downloadProgress.classList.remove('active');
-});
-
-function submitPassword() {
-    const password = el.modalPasswordInput.value;
-    if (!password) {
-        el.passwordError.textContent = 'Vui lòng nhập mật khẩu!';
-        el.passwordError.style.display = 'block';
-        return;
-    }
-
-    el.modalSubmitBtn.disabled = true;
-    el.modalSubmitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Đang giải nén...';
-    el.passwordError.style.display = 'none';
-
-    fetch('/api/extract', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filename: currentArchiveFilename, password })
-    })
-    .then(res => res.json())
-    .then(data => {
-        el.modalSubmitBtn.disabled = false;
-        el.modalSubmitBtn.innerHTML = '<i class="fas fa-unlock"></i> Giải nén';
-
-        if (data.success === false) {
-            if (data.error === 'PASSWORD_REQUIRED') {
-                el.passwordError.textContent = 'Mật khẩu không chính xác, vui lòng thử lại!';
-                el.passwordError.style.display = 'block';
-                el.modalPasswordInput.value = '';
-                el.modalPasswordInput.focus();
-            } else {
-                notify('Lỗi giải nén: ' + data.error, 'error');
-                el.passwordModal.classList.remove('active');
-                el.downloadProgress.classList.remove('active');
-            }
-        } else {
-            el.passwordModal.classList.remove('active');
-            handleDownloadProgress({ ...data, type: 'complete' });
-        }
-    })
-    .catch(err => {
-        el.modalSubmitBtn.disabled = false;
-        el.modalSubmitBtn.innerHTML = '<i class="fas fa-unlock"></i> Giải nén';
-        notify('Lỗi kết nối: ' + err.message, 'error');
-    });
-}
-
-el.modalSubmitBtn.addEventListener('click', submitPassword);
-el.modalPasswordInput.addEventListener('keypress', e => {
-    if (e.key === 'Enter') submitPassword();
-});
 
 // Initial load
 loadFiles();

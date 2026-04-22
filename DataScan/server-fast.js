@@ -690,23 +690,23 @@ app.post('/api/files/upload', async (req, res) => {
     }
 });
 
-async function runFastScan(res, req, normalized) {
-    const { filenames, clientKeywords, normalizedKeywords, excludeKeywords, stripUrl, dedup } = normalized;
+const globalActiveScans = new Map();
+
+async function runFastScanBackground(scanId, normalized) {
+    const scan = globalActiveScans.get(scanId);
+    if (!scan) return;
+
+    const { filenames, normalizedKeywords, excludeKeywords, stripUrl, dedup } = normalized;
     const results = createAggregationState(normalizedKeywords, dedup);
     const deltaTracker = createDeltaTracker(normalizedKeywords);
-    let aborted = false;
-    let activeWorkers = [];
-
-    req.on('close', () => {
-        aborted = true;
-        activeWorkers.forEach(w => w.terminate());
-    });
+    
+    scan.results = results;
+    scan.deltaTracker = deltaTracker;
+    scan.status = 'scanning';
 
     async function scanSingleFile(filename) {
         const filepath = resolveDownloadFilePath(DOWNLOAD_DIR, filename);
-        if (!fs.existsSync(filepath)) {
-            throw new InvalidRequestError(`File not found: ${filename}`);
-        }
+        if (!fs.existsSync(filepath)) return;
 
         const fileSize = fs.statSync(filepath).size;
         const chunkSize = Math.ceil(fileSize / NUM_WORKERS);
@@ -714,7 +714,7 @@ async function runFastScan(res, req, normalized) {
         await new Promise((resolve, reject) => {
             let completedWorkers = 0;
             const workers = [];
-            activeWorkers = workers;
+            scan.activeWorkers = workers;
 
             for (let i = 0; i < NUM_WORKERS; i++) {
                 const start = i * chunkSize;
@@ -733,105 +733,77 @@ async function runFastScan(res, req, normalized) {
                 });
 
                 worker.on('message', (msg) => {
-                    if (aborted) {
+                    if (scan.aborted) {
                         worker.terminate();
                         return;
                     }
 
                     if (msg.type === 'progress') {
                         applyWorkerProgress(results, `${filename}:${i}`, msg);
-                        sendUpdate(filename);
+                        scan.lastUpdate = Date.now();
                     } else if (msg.type === 'complete') {
                         completedWorkers++;
                         if (completedWorkers === NUM_WORKERS) {
-                            activeWorkers = [];
+                            scan.activeWorkers = [];
                             resolve();
                         }
                     }
                 });
 
-                worker.on('error', reject);
+                worker.on('error', (err) => {
+                    console.error(`Worker error: ${err.message}`);
+                    completedWorkers++;
+                    if (completedWorkers === NUM_WORKERS) resolve();
+                });
                 workers.push(worker);
             }
         });
     }
 
-    function buildClientPayload() {
-        const topDomains = toTopDomains(results, 10);
-        const delta = buildDeltaPayload(results, deltaTracker);
-        const clientKeywordPayload = mapKeywordPayloadToClientKeywords({
-            perKeyword: delta.perKeyword,
-            perKeywordCounts: results.perKeywordCounts
-        }, clientKeywords, Boolean(stripUrl));
-
-        return {
-            total: results.total,
-            filtered: results.filtered,
-            results: delta.results,
-            perKeyword: clientKeywordPayload.perKeyword,
-            perKeywordCounts: clientKeywordPayload.perKeywordCounts,
-            topDomains,
-            preview: results.lines.slice(-20)
-        };
-    }
-
-    function sendUpdate(currentFile) {
-        res.write(`data: ${JSON.stringify({
-            type: 'progress',
-            currentFile,
-            processedFiles: filenames.length,
-            ...buildClientPayload()
-        })}\n\n`);
-    }
-
     for (const filename of filenames) {
-        if (aborted) return;
+        if (scan.aborted) break;
+        scan.currentFile = filename;
         await scanSingleFile(filename);
     }
 
-    if (dedup) {
-        dedupeAggregatedResults(results, normalizedKeywords);
-        results.domainCount = rebuildDomainCountFromLineDomains(results.lineDomains);
+    if (!scan.aborted) {
+        if (dedup) {
+            dedupeAggregatedResults(results, normalizedKeywords);
+            results.domainCount = rebuildDomainCountFromLineDomains(results.lineDomains);
+        }
+        finalizeAggregatedTotals(results);
+        scan.status = 'completed';
+    } else {
+        scan.status = 'stopped';
     }
-
-    finalizeAggregatedTotals(results);
-
-    res.write(`data: ${JSON.stringify({
-        type: 'complete',
-        ...buildClientPayload()
-    })}\n\n`);
-    res.end();
+    
+    scan.activeWorkers = [];
+    // Keep results for 1 hour after completion so user can download
+    setTimeout(() => {
+        globalActiveScans.delete(scanId);
+    }, 60 * 60 * 1000);
 }
 
-// API: Ultra-fast scan with Worker Threads
-app.post('/api/scan-fast', async (req, res) => {
-    let normalized;
-    try {
-        normalized = normalizeScanPayload(req.body || {});
-    } catch (err) {
-        if (err instanceof InvalidRequestError) {
-            return res.status(400).json({ success: false, error: err.message });
-        }
-        return res.status(500).json({ success: false, error: err.message });
-    }
+function buildClientPayload(results, deltaTracker, clientKeywords, stripUrl) {
+    const topDomains = toTopDomains(results, 10);
+    const delta = buildDeltaPayload(results, deltaTracker);
+    const clientKeywordPayload = mapKeywordPayloadToClientKeywords({
+        perKeyword: delta.perKeyword,
+        perKeywordCounts: results.perKeywordCounts
+    }, clientKeywords, Boolean(stripUrl));
 
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
+    return {
+        total: results.total,
+        filtered: results.filtered,
+        results: delta.results,
+        perKeyword: clientKeywordPayload.perKeyword,
+        perKeywordCounts: clientKeywordPayload.perKeywordCounts,
+        topDomains,
+        preview: results.lines.slice(-20)
+    };
+}
 
-    try {
-        await runFastScan(res, req, normalized);
-    } catch (err) {
-        if (err instanceof InvalidRequestError) {
-            res.write(`data: ${JSON.stringify({ type: 'error', message: err.message })}\n\n`);
-            return res.end();
-        }
-        res.write(`data: ${JSON.stringify({ type: 'error', message: err.message })}\n\n`);
-        res.end();
-    }
-});
-
-// API: GET version for EventSource (SSE)
+// API: Start background scan
 app.get('/api/scan-fast', async (req, res) => {
     let normalized;
     try {
@@ -844,25 +816,87 @@ app.get('/api/scan-fast', async (req, res) => {
             dedup: req.query.dedup
         });
     } catch (err) {
-        if (err instanceof InvalidRequestError) {
-            return res.status(400).json({ success: false, error: err.message });
-        }
-        return res.status(500).json({ success: false, error: err.message });
+        return res.status(err instanceof InvalidRequestError ? 400 : 500).json({ success: false, error: err.message });
+    }
+
+    const scanId = `scan_${Date.now()}`;
+    globalActiveScans.set(scanId, {
+        id: scanId,
+        normalized,
+        status: 'initializing',
+        aborted: false,
+        activeWorkers: [],
+        results: null,
+        deltaTracker: null,
+        lastUpdate: Date.now(),
+        currentFile: ''
+    });
+
+    runFastScanBackground(scanId, normalized);
+    
+    res.json({ success: true, scanId });
+});
+
+// API: Stream status for a scanId
+app.get('/api/scan-status/:scanId', (req, res) => {
+    const { scanId } = req.params;
+    const scan = globalActiveScans.get(scanId);
+
+    if (!scan) {
+        return res.status(404).json({ success: false, error: 'Scan session not found' });
     }
 
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
 
-    try {
-        await runFastScan(res, req, normalized);
-    } catch (err) {
-        if (err instanceof InvalidRequestError) {
-            res.write(`data: ${JSON.stringify({ type: 'error', message: err.message })}\n\n`);
-            return res.end();
+    const sendUpdate = (force = false) => {
+        if (!scan.results) return;
+        const payload = buildClientPayload(scan.results, scan.deltaTracker, scan.normalized.clientKeywords, scan.normalized.stripUrl);
+        res.write(`data: ${JSON.stringify({
+            type: scan.status === 'completed' ? 'complete' : 'progress',
+            scanId,
+            currentFile: scan.currentFile,
+            processedFiles: scan.normalized.filenames.length,
+            ...payload
+        })}\n\n`);
+    };
+
+    const interval = setInterval(() => {
+        if (scan.status === 'completed' || scan.status === 'stopped') {
+            sendUpdate(true);
+            clearInterval(interval);
+            res.end();
+            return;
         }
-        res.write(`data: ${JSON.stringify({ type: 'error', message: err.message })}\n\n`);
-        res.end();
+        sendUpdate();
+    }, 800);
+
+    req.on('close', () => {
+        clearInterval(interval);
+    });
+    
+    // Send immediate first frame
+    if (scan.results) sendUpdate(true);
+});
+
+// API: Check for active scans
+app.get('/api/scan-active', (req, res) => {
+    const active = Array.from(globalActiveScans.values())
+        .filter(s => s.status === 'scanning' || s.status === 'initializing')
+        .map(s => ({ id: s.id, status: s.status }));
+    res.json({ success: true, active });
+});
+
+// API: Stop scan
+app.post('/api/scan-stop/:scanId', (req, res) => {
+    const scan = globalActiveScans.get(req.params.scanId);
+    if (scan) {
+        scan.aborted = true;
+        scan.activeWorkers.forEach(w => w.terminate());
+        res.json({ success: true });
+    } else {
+        res.status(404).json({ success: false, error: 'Scan not found' });
     }
 });
 

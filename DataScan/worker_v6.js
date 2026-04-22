@@ -17,6 +17,10 @@ self.onmessage = async function (e) {
 
     const domainStats = new Map();
     const seenSet = new Set();
+    
+    // MEMORY PROTECTION: Clear seenSet if it gets too large (> 2 million entries)
+    // to prevent OOM crash on massive files
+    const MAX_SEEN_ENTRIES = 2000000;
 
     const kwList = Array.isArray(keywords)
         ? keywords.map(k => String(k).trim().toLowerCase()).filter(Boolean)
@@ -27,17 +31,15 @@ self.onmessage = async function (e) {
         : [];
 
     // Per-keyword tracking
-    const perKeywordBatch = {};  // { kw: [lines] }
     const perKeywordCounts = {}; // { kw: number }
     kwList.forEach(kw => {
-        perKeywordBatch[kw] = [];
         perKeywordCounts[kw] = 0;
     });
 
     let foundLinesBatch = [];
+    let linesSinceLastGC = 0;
 
     try {
-        // Process each file sequentially
         for (const file of files) {
             const reader = file.stream().getReader();
             const decoder = new TextDecoder('utf-8');
@@ -61,6 +63,19 @@ self.onmessage = async function (e) {
                     if (!cleanLine.includes(':')) continue;
 
                     totalLines++;
+                    linesSinceLastGC++;
+
+                    // Memory management: periodicity to allow GC to breathe
+                    if (linesSinceLastGC > 50000) {
+                        await new Promise(r => setTimeout(r, 0));
+                        linesSinceLastGC = 0;
+                    }
+
+                    // Auto-clear seenSet if it threatens RAM
+                    if (dedup && seenSet.size > MAX_SEEN_ENTRIES) {
+                        seenSet.clear();
+                        console.warn('Memory protection: Cleared deduplication set to prevent crash');
+                    }
 
                     const processed = processLegacyScanLine({
                         line: cleanLine,
@@ -74,7 +89,6 @@ self.onmessage = async function (e) {
 
                     const { matchedKeyword, outputLine, domain } = processed;
 
-                    perKeywordBatch[matchedKeyword].push(outputLine);
                     perKeywordCounts[matchedKeyword]++;
                     filteredLines++;
 
@@ -84,17 +98,15 @@ self.onmessage = async function (e) {
 
                     foundLinesBatch.push(outputLine);
 
-                    // Batch send
-                    if (foundLinesBatch.length >= 10000 || (Date.now() - lastUpdate > 300)) {
+                    // THROTTLED UI UPDATES: Max 3 times per second, and keep results chunk small
+                    if (foundLinesBatch.length >= 5000 || (Date.now() - lastUpdate > 400)) {
                         sendUpdate(
                             totalLines, filteredLines, bytesProcessed,
                             foundLinesBatch.slice(-20), false,
                             foundLinesBatch.join('\n'),
-                            domainStats, perKeywordBatch, perKeywordCounts
+                            domainStats, perKeywordCounts
                         );
                         foundLinesBatch = [];
-                        // Clear per-keyword batches (data already sent)
-                        kwList.forEach(kw => { perKeywordBatch[kw] = []; });
                         lastUpdate = Date.now();
                     }
                 }
