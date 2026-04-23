@@ -139,6 +139,364 @@ document.addEventListener('DOMContentLoaded', () => {
         el.processBtn.disabled = false;
     }
 
+    async function uploadFilesToDownloads(fileList) {
+        const files = Array.from(fileList || []);
+        if (files.length === 0) return [];
+
+        const payload = [];
+        for (const file of files) {
+            if (!file.name.toLowerCase().endsWith('.txt')) {
+                throw new Error(`Chỉ hỗ trợ file .txt: ${file.name}`);
+            }
+
+            payload.push({
+                name: file.name,
+                content: await file.text()
+            });
+        }
+
+        const res = await fetch('/api/files/upload', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ files: payload })
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) {
+            throw new Error(data.error || 'Upload thất bại');
+        }
+
+        return data.files || [];
+    }
+
+    function showFileSelectionModal(initialFiles) {
+        let files = Array.isArray(initialFiles) ? [...initialFiles] : [];
+        const selectedNames = new Set(state.selectedFiles.map(file => file.name));
+
+        const modal = document.createElement('div');
+        modal.style.cssText = `
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.85);
+            backdrop-filter: blur(8px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 9999;
+            animation: fadeIn 0.2s;
+        `;
+
+        const content = document.createElement('div');
+        content.style.cssText = `
+            background: var(--bg-elevated);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-xl);
+            padding: 1.5rem;
+            max-width: 680px;
+            width: 92%;
+            max-height: 78vh;
+            overflow-y: auto;
+        `;
+
+        modal.appendChild(content);
+        document.body.appendChild(modal);
+
+        const render = () => {
+            const selectedFiles = files.filter(file => selectedNames.has(file.name));
+            const totalSize = selectedFiles.reduce((sum, file) => sum + (file.size || 0), 0);
+
+            content.innerHTML = `
+                <h3 style="margin: 0 0 1rem 0; color: var(--text-primary); font-size: 1.2rem;">
+                    <i class="fas fa-folder-open"></i> Chọn file để scan
+                </h3>
+                <div style="display:flex; gap:0.75rem; align-items:center; justify-content:space-between; margin-bottom:1rem; flex-wrap:wrap;">
+                    <div style="color: var(--text-dim); font-size: 0.8rem;">${selectedFiles.length} file • ${formatBytes(totalSize)}</div>
+                    <label class="btn btn-ghost" style="cursor:pointer;">
+                        <i class="fas fa-upload"></i> Upload .txt
+                        <input id="modalUploadInput" type="file" accept=".txt,text/plain" multiple style="display:none;">
+                    </label>
+                </div>
+                <div id="modalFileList" style="display: flex; flex-direction: column; gap: 0.5rem; margin-bottom: 1rem;">
+                    ${files.map((f, i) => `
+                        <label style="display: flex; align-items: center; gap: 0.75rem; padding: 0.75rem; background: rgba(0,0,0,0.3); border: 1px solid var(--border); border-radius: var(--radius-md); cursor: pointer; transition: all 0.2s;" class="file-select-item" data-index="${i}">
+                            <input type="checkbox" name="fileSelect" value="${escapeHtml(f.name)}" ${selectedNames.has(f.name) ? 'checked' : ''} style="width: 18px; height: 18px; cursor: pointer;">
+                            <div style="flex: 1;">
+                                <div style="color: var(--text-primary); font-size: 0.85rem; font-weight: 600; margin-bottom: 0.25rem;">${escapeHtml(f.name)}</div>
+                                <div style="color: var(--text-dim); font-size: 0.7rem; font-family: var(--font-mono);">
+                                    ${formatBytes(f.size)} • ${new Date(f.modified).toLocaleString('vi-VN')}
+                                </div>
+                            </div>
+                        </label>
+                    `).join('')}
+                </div>
+                <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                    <button id="modalSelectBtn" class="btn btn-primary" style="flex: 1; min-width: 180px;">
+                        <i class="fas fa-check"></i> Dùng file đã chọn
+                    </button>
+                    <button id="modalSelectAllBtn" class="btn btn-ghost">
+                        <i class="fas fa-list-check"></i> Chọn tất cả
+                    </button>
+                    <button id="modalClearBtn" class="btn btn-ghost">
+                        <i class="fas fa-eraser"></i> Bỏ chọn
+                    </button>
+                    <button id="modalCancelBtn" class="btn btn-ghost">
+                        <i class="fas fa-xmark"></i> Hủy
+                    </button>
+                </div>
+            `;
+
+            content.querySelectorAll('.file-select-item').forEach(item => {
+                item.addEventListener('mouseenter', () => {
+                    item.style.borderColor = 'var(--accent)';
+                    item.style.background = 'rgba(108, 92, 231, 0.1)';
+                });
+                item.addEventListener('mouseleave', () => {
+                    item.style.borderColor = 'var(--border)';
+                    item.style.background = 'rgba(0,0,0,0.3)';
+                });
+            });
+
+            content.querySelectorAll('input[name="fileSelect"]').forEach(input => {
+                input.addEventListener('change', () => {
+                    if (input.checked) selectedNames.add(input.value);
+                    else selectedNames.delete(input.value);
+                    render();
+                });
+            });
+
+            document.getElementById('modalSelectAllBtn').addEventListener('click', () => {
+                files.forEach(file => selectedNames.add(file.name));
+                render();
+            });
+
+            document.getElementById('modalClearBtn').addEventListener('click', () => {
+                selectedNames.clear();
+                render();
+            });
+
+            document.getElementById('modalCancelBtn').addEventListener('click', () => {
+                modal.remove();
+            });
+
+            document.getElementById('modalSelectBtn').addEventListener('click', () => {
+                const selectedFilesNow = files.filter(file => selectedNames.has(file.name));
+                if (selectedFilesNow.length === 0) {
+                    notify('Chưa chọn file nào!', 'error');
+                    return;
+                }
+
+                state.selectedFiles = selectedFilesNow;
+                updateSelectedFilesSummary();
+                modal.remove();
+                notify(`Đã chọn ${selectedFilesNow.length} file`, 'success');
+            });
+
+            const uploadInput = document.getElementById('modalUploadInput');
+            uploadInput.addEventListener('change', async () => {
+                try {
+                    if (!uploadInput.files || uploadInput.files.length === 0) return;
+                    notify('Đang upload file...', 'info');
+                    const uploaded = await uploadFilesToDownloads(uploadInput.files);
+                    uploaded.forEach(file => selectedNames.add(file.name));
+                    const listRes = await fetch('/api/files');
+                    const listData = await listRes.json();
+                    if (!listRes.ok || !listData.success) {
+                        throw new Error(listData.error || 'Không thể tải lại danh sách file');
+                    }
+                    files = listData.files;
+                    render();
+                    notify(`Upload thành công ${uploaded.length} file`, 'success');
+                } catch (err) {
+                    notify(err.message, 'error');
+                }
+            });
+        };
+
+        render();
+
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) modal.remove();
+        });
+    }
+
+    async function uploadFilesToDownloads(fileList) {
+        const files = Array.from(fileList || []);
+        if (files.length === 0) return [];
+
+        const payload = [];
+        for (const file of files) {
+            if (!file.name.toLowerCase().endsWith('.txt')) {
+                throw new Error(`Chỉ hỗ trợ file .txt: ${file.name}`);
+            }
+
+            payload.push({
+                name: file.name,
+                content: await file.text()
+            });
+        }
+
+        const res = await fetch('/api/files/upload', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ files: payload })
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) {
+            throw new Error(data.error || 'Upload thất bại');
+        }
+
+        return data.files || [];
+    }
+
+    function showFileSelectionModal(initialFiles) {
+        let files = Array.isArray(initialFiles) ? [...initialFiles] : [];
+        const selectedNames = new Set(state.selectedFiles.map(file => file.name));
+
+        const modal = document.createElement('div');
+        modal.style.cssText = `
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.85);
+            backdrop-filter: blur(8px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 9999;
+            animation: fadeIn 0.2s;
+        `;
+
+        const content = document.createElement('div');
+        content.style.cssText = `
+            background: var(--bg-elevated);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-xl);
+            padding: 1.5rem;
+            max-width: 680px;
+            width: 92%;
+            max-height: 78vh;
+            overflow-y: auto;
+        `;
+
+        modal.appendChild(content);
+        document.body.appendChild(modal);
+
+        const render = () => {
+            const selectedFiles = files.filter(file => selectedNames.has(file.name));
+            const totalSize = selectedFiles.reduce((sum, file) => sum + (file.size || 0), 0);
+
+            content.innerHTML = `
+                <h3 style="margin: 0 0 1rem 0; color: var(--text-primary); font-size: 1.2rem;">
+                    <i class="fas fa-folder-open"></i> Chọn file để scan
+                </h3>
+                <div style="display:flex; gap:0.75rem; align-items:center; justify-content:space-between; margin-bottom:1rem; flex-wrap:wrap;">
+                    <div style="color: var(--text-dim); font-size: 0.8rem;">${selectedFiles.length} file • ${formatBytes(totalSize)}</div>
+                    <label class="btn btn-ghost" style="cursor:pointer;">
+                        <i class="fas fa-upload"></i> Upload .txt
+                        <input id="modalUploadInput" type="file" accept=".txt,text/plain" multiple style="display:none;">
+                    </label>
+                </div>
+                <div id="modalFileList" style="display: flex; flex-direction: column; gap: 0.5rem; margin-bottom: 1rem;">
+                    ${files.map((f, i) => `
+                        <label style="display: flex; align-items: center; gap: 0.75rem; padding: 0.75rem; background: rgba(0,0,0,0.3); border: 1px solid var(--border); border-radius: var(--radius-md); cursor: pointer; transition: all 0.2s;" class="file-select-item" data-index="${i}">
+                            <input type="checkbox" name="fileSelect" value="${escapeHtml(f.name)}" ${selectedNames.has(f.name) ? 'checked' : ''} style="width: 18px; height: 18px; cursor: pointer;">
+                            <div style="flex: 1;">
+                                <div style="color: var(--text-primary); font-size: 0.85rem; font-weight: 600; margin-bottom: 0.25rem;">${escapeHtml(f.name)}</div>
+                                <div style="color: var(--text-dim); font-size: 0.7rem; font-family: var(--font-mono);">
+                                    ${formatBytes(f.size)} • ${new Date(f.modified).toLocaleString('vi-VN')}
+                                </div>
+                            </div>
+                        </label>
+                    `).join('')}
+                </div>
+                <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                    <button id="modalSelectBtn" class="btn btn-primary" style="flex: 1; min-width: 180px;">
+                        <i class="fas fa-check"></i> Dùng file đã chọn
+                    </button>
+                    <button id="modalSelectAllBtn" class="btn btn-ghost">
+                        <i class="fas fa-list-check"></i> Chọn tất cả
+                    </button>
+                    <button id="modalClearBtn" class="btn btn-ghost">
+                        <i class="fas fa-eraser"></i> Bỏ chọn
+                    </button>
+                    <button id="modalCancelBtn" class="btn btn-ghost">
+                        <i class="fas fa-xmark"></i> Hủy
+                    </button>
+                </div>
+            `;
+
+            content.querySelectorAll('.file-select-item').forEach(item => {
+                item.addEventListener('mouseenter', () => {
+                    item.style.borderColor = 'var(--accent)';
+                    item.style.background = 'rgba(108, 92, 231, 0.1)';
+                });
+                item.addEventListener('mouseleave', () => {
+                    item.style.borderColor = 'var(--border)';
+                    item.style.background = 'rgba(0,0,0,0.3)';
+                });
+            });
+
+            content.querySelectorAll('input[name="fileSelect"]').forEach(input => {
+                input.addEventListener('change', () => {
+                    if (input.checked) selectedNames.add(input.value);
+                    else selectedNames.delete(input.value);
+                    render();
+                });
+            });
+
+            document.getElementById('modalSelectAllBtn').addEventListener('click', () => {
+                files.forEach(file => selectedNames.add(file.name));
+                render();
+            });
+
+            document.getElementById('modalClearBtn').addEventListener('click', () => {
+                selectedNames.clear();
+                render();
+            });
+
+            document.getElementById('modalCancelBtn').addEventListener('click', () => {
+                modal.remove();
+            });
+
+            document.getElementById('modalSelectBtn').addEventListener('click', () => {
+                const selectedFilesNow = files.filter(file => selectedNames.has(file.name));
+                if (selectedFilesNow.length === 0) {
+                    notify('Chưa chọn file nào!', 'error');
+                    return;
+                }
+
+                state.selectedFiles = selectedFilesNow;
+                updateSelectedFilesSummary();
+                modal.remove();
+                notify(`Đã chọn ${selectedFilesNow.length} file`, 'success');
+            });
+
+            const uploadInput = document.getElementById('modalUploadInput');
+            uploadInput.addEventListener('change', async () => {
+                try {
+                    if (!uploadInput.files || uploadInput.files.length === 0) return;
+                    notify('Đang upload file...', 'info');
+                    const uploaded = await uploadFilesToDownloads(uploadInput.files);
+                    uploaded.forEach(file => selectedNames.add(file.name));
+                    const listRes = await fetch('/api/files');
+                    const listData = await listRes.json();
+                    if (!listRes.ok || !listData.success) {
+                        throw new Error(listData.error || 'Không thể tải lại danh sách file');
+                    }
+                    files = listData.files;
+                    render();
+                    notify(`Upload thành công ${uploaded.length} file`, 'success');
+                } catch (err) {
+                    notify(err.message, 'error');
+                }
+            });
+        };
+
+        render();
+
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) modal.remove();
+        });
+    }
+
     // ─── Process Stream ───
     async function startProcess() {
         const keywords = parseKeywords();
