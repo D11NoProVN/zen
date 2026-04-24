@@ -538,6 +538,7 @@ document.addEventListener('DOMContentLoaded', () => {
         state.totalCount = 0;
         state.foundCount = 0;
         state.lastTotal = 0;
+        state.lastUpdateMs = Date.now();
         state.blobChunks = [];
         state.perKeywordChunks = {};
         state.perKeywordCounts = {};
@@ -560,26 +561,38 @@ document.addEventListener('DOMContentLoaded', () => {
         el.processBtn.classList.add('hidden');
         el.stopBtn.classList.remove('hidden');
 
-        state.speedTimer = setInterval(() => {
-            const delta = state.totalCount - state.lastTotal;
-            el.scanSpeed.innerText = delta.toLocaleString();
-            state.lastTotal = state.totalCount;
-        }, 1000);
-
         state.eventSource = new EventSource(`/api/scan-status/${scanId}`);
 
         state.eventSource.onmessage = (event) => {
             const data = JSON.parse(event.data);
 
             if (data.type === 'progress' || data.type === 'complete') {
+                const now = Date.now();
+                if (state.lastUpdateMs) {
+                    const timeDelta = (now - state.lastUpdateMs) / 1000;
+                    if (timeDelta > 0) {
+                        const lineDelta = data.total - state.lastTotal;
+                        if (lineDelta >= 0) {
+                            const currentSpeed = Math.round(lineDelta / timeDelta);
+                            el.scanSpeed.innerText = currentSpeed.toLocaleString();
+                        }
+                    }
+                }
+                state.lastUpdateMs = now;
+                state.lastTotal = data.total;
+
                 state.totalCount = data.total;
                 state.foundCount = data.filtered;
 
                 el.totalLines.innerText = state.totalCount.toLocaleString();
                 el.filteredLines.innerText = state.foundCount.toLocaleString();
 
-                // Simple progress estimation for UI
-                el.progressBar.style.width = `${Math.min(99.9, (data.processedFiles / Math.max(1, data.processedFiles)) * 100)}%`;
+                const estimatedPercent = state.selectedTotalSize > 0
+                    ? Math.min(99.9, Math.max(1, (data.total / Math.max(state.selectedTotalSize / 35, 1)) * 100))
+                    : (data.total > 0 ? 1 : 0);
+                if (data.type === 'progress') {
+                    el.progressBar.style.width = `${estimatedPercent.toFixed(2)}%`;
+                }
 
                 if (data.results && data.results.length > 0) {
                     state.blobChunks.push(new Blob([data.results + '\n'], { type: 'text/plain' }));

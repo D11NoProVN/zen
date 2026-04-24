@@ -1,38 +1,29 @@
 function createDeltaTracker(keywordKeys = []) {
-    const perKeywordIndex = {};
-
-    for (const key of keywordKeys) {
-        perKeywordIndex[key] = 0;
-    }
-
     return {
-        globalIndex: 0,
-        perKeywordIndex
+        // Delta tracker no longer needs indices since we splice arrays to free memory!
+        isActive: true
     };
 }
 
 function buildDeltaPayload(results, tracker) {
-    const lines = Array.isArray(results.lines) ? results.lines : [];
+    // Splice arrays to completely clear them from server memory!
+    // This prevents Out of Memory (OOM) freezing on huge files.
+    const newGlobalLines = Array.isArray(results.lines) ? results.lines.splice(0, results.lines.length) : [];
+    
+    // We must also splice lineDomains so it doesn't stay behind and leak memory
+    if (Array.isArray(results.lineDomains)) {
+        results.lineDomains.splice(0, results.lineDomains.length);
+    }
+
     const keywordResults = results.perKeyword && typeof results.perKeyword === 'object'
         ? results.perKeyword
         : {};
-
-    if (tracker.globalIndex > lines.length) {
-        tracker.globalIndex = lines.length;
-    }
-
-    const newGlobalLines = lines.slice(tracker.globalIndex);
-    tracker.globalIndex = lines.length;
 
     const perKeywordDelta = {};
 
     for (const [kw, kwLinesRaw] of Object.entries(keywordResults)) {
         const kwLines = Array.isArray(kwLinesRaw) ? kwLinesRaw : [];
-        const previousIndex = tracker.perKeywordIndex[kw] || 0;
-        const safeIndex = previousIndex > kwLines.length ? kwLines.length : previousIndex;
-
-        const delta = kwLines.slice(safeIndex);
-        tracker.perKeywordIndex[kw] = kwLines.length;
+        const delta = kwLines.splice(0, kwLines.length);
 
         if (delta.length > 0) {
             perKeywordDelta[kw] = delta;

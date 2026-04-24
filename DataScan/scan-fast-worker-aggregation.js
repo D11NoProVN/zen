@@ -232,11 +232,8 @@ function mapKeywordPayloadToClientKeywords(payload, clientKeywords, stripUrl) {
 }
 
 function finalizeAggregatedTotals(state) {
-    state.filtered = state.lines.length;
-
-    for (const [kw, lines] of Object.entries(state.perKeyword)) {
-        state.perKeywordCounts[kw] = Array.isArray(lines) ? lines.length : 0;
-    }
+    // Array lengths are 0 because arrays are consumed by buildDeltaPayload dynamically.
+    // The state.filtered and state.perKeywordCounts are already incremented correctly during applyWorkerProgress.
 }
 
 function toTopDomains(state, limit = 10) {
