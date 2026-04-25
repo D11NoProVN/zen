@@ -31,9 +31,9 @@ def read_tunnel_url(path: str | Path) -> Optional[str]:
 
 def build_get_response(port: str, tunnel_url: Optional[str]) -> str:
     if port != "8080":
-        return f"Chưa có thông tin cho port {port}"
+        return f"Chua co thong tin cho port {port}"
     if not tunnel_url:
-        return f"Chưa có tunnel cho port {port}"
+        return f"Chua co tunnel cho port {port}"
     return f"**Web UI:** {tunnel_url}"
 
 
@@ -46,8 +46,8 @@ class TunnelBot(discord.Client):
     async def setup_hook(self) -> None:
         guild = discord.Object(id=GUILD_ID)
 
-        @self.tree.command(name="get", description="Lấy link tunnel", guild=guild)
-        @app_commands.describe(port="Port tunnel cần lấy")
+        @self.tree.command(name="get", description="Lay link tunnel", guild=guild)
+        @app_commands.describe(port="Port tunnel can lay")
         @app_commands.choices(port=[
             app_commands.Choice(name="8080 (Web UI)", value="8080"),
             app_commands.Choice(name="8081 (Proxy)", value="8081")
@@ -60,12 +60,17 @@ class TunnelBot(discord.Client):
                 message = build_get_response(port.value, tunnel_url)
             else:
                 if not PROXY_INFO_FILE.exists():
-                    message = "Chưa có thông tin Proxy 8081. Đợi tý mày!"
+                    message = "Chua co thong tin Proxy 8081. Doi ty may!"
                 else:
                     info = PROXY_INFO_FILE.read_text().strip()
-                    host, p = info.split(':')
-                    message = f"**Proxy của mày đây:**\nIP/Host: `{host}`\nPort: `{p}`\nUser: `zen` | Pass: `123456`"
-            
+                    host, p = info.split(":")
+                    message = (
+                        "**Proxy cua may day:**\n"
+                        f"HTTP: `http://zen:123456@{host}:{p}`\n"
+                        f"SOCKS5: `socks5://zen:123456@{host}:{p}`\n"
+                        f"Host: `{host}` | Port: `{p}` | User: `zen` | Pass: `123456`"
+                    )
+
             await interaction.response.send_message(message)
 
         await self.tree.sync(guild=guild)

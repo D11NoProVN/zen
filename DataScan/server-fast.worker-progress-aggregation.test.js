@@ -22,7 +22,7 @@ test('aggregation should apply worker progress as deltas, not cumulative totals'
     // Worker 0 sends cumulative progress snapshots
     applyWorkerProgress(state, 0, {
         total: 100,
-        filtered: 10,
+        filtered: 2,
         lines: ['a1:p1', 'a2:p2'],
         perKeyword: {
             'bidaithanroblox.com': ['a1:p1', 'a2:p2']
@@ -34,7 +34,7 @@ test('aggregation should apply worker progress as deltas, not cumulative totals'
 
     applyWorkerProgress(state, 0, {
         total: 200,
-        filtered: 15,
+        filtered: 3,
         lines: ['a3:p3'],
         perKeyword: {
             'bidaithanroblox.com': ['a3:p3']

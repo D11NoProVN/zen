@@ -162,14 +162,127 @@ function getAxiosConfig(url, proxyUrl = null) {
 }
 
 const http = require('node:http');
+const https = require('node:https');
 const net = require('node:net');
 
 function startProxyServer(port = 8081) {
     const USER = 'zen';
     const PASS = '123456';
 
+    function writeProxyAuthRequired(socket) {
+        socket.write([
+            'HTTP/1.1 407 Proxy Authentication Required',
+            'Proxy-Authenticate: Basic realm="ZenProxy"',
+            'Connection: close',
+            '',
+            ''
+        ].join('\r\n'));
+        socket.end();
+    }
+
+    function isAuthorizedHttpProxyRequest(headers) {
+        const authHeader = headers.find((line) => /^proxy-authorization:/i.test(line));
+        if (!authHeader) return false;
+
+        const value = authHeader.slice(authHeader.indexOf(':') + 1).trim();
+        const match = value.match(/^Basic\s+(.+)$/i);
+        if (!match) return false;
+
+        try {
+            return Buffer.from(match[1], 'base64').toString() === `${USER}:${PASS}`;
+        } catch (err) {
+            return false;
+        }
+    }
+
+    function handleHttpProxyRequest(socket, data) {
+        const headerEnd = data.indexOf('\r\n\r\n');
+        const headerBuffer = headerEnd === -1 ? data : data.slice(0, headerEnd);
+        const headerText = headerBuffer.toString('latin1');
+        const headerLines = headerText.split('\r\n');
+        const [method, requestTarget, httpVersion] = headerLines[0].split(' ');
+
+        if (!method || !requestTarget || !httpVersion) return socket.end();
+        if (!isAuthorizedHttpProxyRequest(headerLines.slice(1))) {
+            return writeProxyAuthRequired(socket);
+        }
+
+        if (method.toUpperCase() === 'CONNECT') {
+            const [host, rawPort] = requestTarget.split(':');
+            const targetPort = parseInt(rawPort || '443', 10);
+            if (!host || Number.isNaN(targetPort)) return socket.end();
+
+            const targetSocket = net.connect(targetPort, host, () => {
+                socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+                targetSocket.pipe(socket);
+                socket.pipe(targetSocket);
+            });
+
+            targetSocket.on('error', () => {
+                socket.write('HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n');
+                socket.end();
+            });
+            socket.on('error', () => targetSocket.end());
+            return;
+        }
+
+        let targetUrl;
+        try {
+            targetUrl = new URL(requestTarget);
+        } catch (err) {
+            return socket.end();
+        }
+        if (targetUrl.protocol !== 'http:' && targetUrl.protocol !== 'https:') {
+            return socket.end();
+        }
+
+        const headers = {};
+        for (const line of headerLines.slice(1)) {
+            const separator = line.indexOf(':');
+            if (separator === -1) continue;
+            const name = line.slice(0, separator).trim();
+            if (/^proxy-(authorization|connection)$/i.test(name)) continue;
+            headers[name] = line.slice(separator + 1).trim();
+        }
+
+        const requestModule = targetUrl.protocol === 'https:' ? https : http;
+        const proxyReq = requestModule.request({
+            protocol: targetUrl.protocol,
+            hostname: targetUrl.hostname,
+            port: targetUrl.port || (targetUrl.protocol === 'https:' ? 443 : 80),
+            method,
+            path: `${targetUrl.pathname}${targetUrl.search}`,
+            headers
+        }, (proxyRes) => {
+            socket.write(`HTTP/1.1 ${proxyRes.statusCode} ${proxyRes.statusMessage}\r\n`);
+            for (const [name, value] of Object.entries(proxyRes.headers)) {
+                if (Array.isArray(value)) {
+                    value.forEach((item) => socket.write(`${name}: ${item}\r\n`));
+                } else if (value !== undefined) {
+                    socket.write(`${name}: ${value}\r\n`);
+                }
+            }
+            socket.write('\r\n');
+            proxyRes.pipe(socket);
+        });
+
+        proxyReq.on('error', () => {
+            socket.write('HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n');
+            socket.end();
+        });
+
+        if (headerEnd !== -1 && data.length > headerEnd + 4) {
+            proxyReq.write(data.slice(headerEnd + 4));
+        }
+        socket.pipe(proxyReq);
+    }
+
     const server = net.createServer((socket) => {
         socket.once('data', (data) => {
+            if (/^(CONNECT|GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s/i.test(data.toString('latin1', 0, 16))) {
+                return handleHttpProxyRequest(socket, data);
+            }
+
             // SOCKS5 Handshake: [0x05, NMETHODS, METHODS...]
             if (data[0] !== 0x05) return socket.end();
 
@@ -755,10 +868,6 @@ async function runFastScanBackground(scanId, normalized) {
     }
 
     if (!scan.aborted) {
-        if (dedup) {
-            dedupeAggregatedResults(results, normalizedKeywords);
-            results.domainCount = rebuildDomainCountFromLineDomains(results.lineDomains);
-        }
         finalizeAggregatedTotals(results);
         scan.status = 'completed';
     } else {

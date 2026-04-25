@@ -72,7 +72,16 @@ function applyWorkerProgress(state, workerId, msg) {
                 if (!state.globalSeen.has(line)) {
                     state.globalSeen.add(line);
                     state.lines.push(line);
-                    state.lineDomains.push(lineDomains[i] || null);
+                    
+                    const lineDomain = lineDomains[i] || null;
+                    state.lineDomains.push(lineDomain);
+                    if (lineDomain) {
+                        const lcDomain = typeof lineDomain === 'string' ? lineDomain.toLowerCase() : null;
+                        if (lcDomain) {
+                            state.domainCount.set(lcDomain, (state.domainCount.get(lcDomain) || 0) + 1);
+                        }
+                    }
+                    
                     state.filtered++; // Increment global filtered count for each unique line
                 }
             }
@@ -116,11 +125,7 @@ function applyWorkerProgress(state, workerId, msg) {
 
     const domainSnapshot = msg.domainCount && typeof msg.domainCount === 'object' ? msg.domainCount : {};
 
-    if (state.dedup) {
-        // When dedup is enabled, we rebuild domain count from line domains to stay consistent
-        // with the unique lines we've accepted.
-        state.domainCount = rebuildDomainCountFromLineDomains(state.lineDomains);
-    } else {
+    if (!state.dedup) {
         for (const [domain, countRaw] of Object.entries(domainSnapshot)) {
             const currentCount = typeof countRaw === 'number' ? countRaw : 0;
             const previousCount = snapshot.domainCount[domain] || 0;
