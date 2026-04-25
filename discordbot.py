@@ -67,7 +67,6 @@ class TunnelBot(discord.Client):
                     message = (
                         "**Proxy cua may day:**\n"
                         f"HTTP: `http://zen:123456@{host}:{p}`\n"
-                        f"SOCKS5: `socks5://zen:123456@{host}:{p}`\n"
                         f"Host: `{host}` | Port: `{p}` | User: `zen` | Pass: `123456`"
                     )
 

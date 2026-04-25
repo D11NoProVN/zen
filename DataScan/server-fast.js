@@ -169,6 +169,26 @@ function startProxyServer(port = 8081) {
     const USER = 'zen';
     const PASS = '123456';
 
+    function isAuthorizedProxyRequest(authHeader) {
+        if (!authHeader) return false;
+
+        const match = authHeader.match(/^Basic\s+(.+)$/i);
+        if (!match) return false;
+
+        try {
+            return Buffer.from(match[1], 'base64').toString() === `${USER}:${PASS}`;
+        } catch (err) {
+            return false;
+        }
+    }
+
+    function removeProxyHeaders(headers) {
+        const cleanHeaders = { ...headers };
+        delete cleanHeaders['proxy-authorization'];
+        delete cleanHeaders['proxy-connection'];
+        return cleanHeaders;
+    }
+
     function writeProxyAuthRequired(socket) {
         socket.write([
             'HTTP/1.1 407 Proxy Authentication Required',
@@ -180,69 +200,25 @@ function startProxyServer(port = 8081) {
         socket.end();
     }
 
-    function isAuthorizedHttpProxyRequest(headers) {
-        const authHeader = headers.find((line) => /^proxy-authorization:/i.test(line));
-        if (!authHeader) return false;
-
-        const value = authHeader.slice(authHeader.indexOf(':') + 1).trim();
-        const match = value.match(/^Basic\s+(.+)$/i);
-        if (!match) return false;
-
-        try {
-            return Buffer.from(match[1], 'base64').toString() === `${USER}:${PASS}`;
-        } catch (err) {
-            return false;
-        }
-    }
-
-    function handleHttpProxyRequest(socket, data) {
-        const headerEnd = data.indexOf('\r\n\r\n');
-        const headerBuffer = headerEnd === -1 ? data : data.slice(0, headerEnd);
-        const headerText = headerBuffer.toString('latin1');
-        const headerLines = headerText.split('\r\n');
-        const [method, requestTarget, httpVersion] = headerLines[0].split(' ');
-
-        if (!method || !requestTarget || !httpVersion) return socket.end();
-        if (!isAuthorizedHttpProxyRequest(headerLines.slice(1))) {
-            return writeProxyAuthRequired(socket);
-        }
-
-        if (method.toUpperCase() === 'CONNECT') {
-            const [host, rawPort] = requestTarget.split(':');
-            const targetPort = parseInt(rawPort || '443', 10);
-            if (!host || Number.isNaN(targetPort)) return socket.end();
-
-            const targetSocket = net.connect(targetPort, host, () => {
-                socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
-                targetSocket.pipe(socket);
-                socket.pipe(targetSocket);
+    const server = http.createServer((req, res) => {
+        if (!isAuthorizedProxyRequest(req.headers['proxy-authorization'])) {
+            res.writeHead(407, {
+                'Proxy-Authenticate': 'Basic realm="ZenProxy"',
+                'Connection': 'close'
             });
-
-            targetSocket.on('error', () => {
-                socket.write('HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n');
-                socket.end();
-            });
-            socket.on('error', () => targetSocket.end());
-            return;
+            return res.end();
         }
 
         let targetUrl;
         try {
-            targetUrl = new URL(requestTarget);
+            targetUrl = new URL(req.url);
         } catch (err) {
-            return socket.end();
+            res.writeHead(400, { 'Connection': 'close' });
+            return res.end('Invalid proxy target');
         }
         if (targetUrl.protocol !== 'http:' && targetUrl.protocol !== 'https:') {
-            return socket.end();
-        }
-
-        const headers = {};
-        for (const line of headerLines.slice(1)) {
-            const separator = line.indexOf(':');
-            if (separator === -1) continue;
-            const name = line.slice(0, separator).trim();
-            if (/^proxy-(authorization|connection)$/i.test(name)) continue;
-            headers[name] = line.slice(separator + 1).trim();
+            res.writeHead(400, { 'Connection': 'close' });
+            return res.end('Unsupported proxy protocol');
         }
 
         const requestModule = targetUrl.protocol === 'https:' ? https : http;
@@ -250,127 +226,50 @@ function startProxyServer(port = 8081) {
             protocol: targetUrl.protocol,
             hostname: targetUrl.hostname,
             port: targetUrl.port || (targetUrl.protocol === 'https:' ? 443 : 80),
-            method,
+            method: req.method,
             path: `${targetUrl.pathname}${targetUrl.search}`,
-            headers
+            headers: removeProxyHeaders(req.headers)
         }, (proxyRes) => {
-            socket.write(`HTTP/1.1 ${proxyRes.statusCode} ${proxyRes.statusMessage}\r\n`);
-            for (const [name, value] of Object.entries(proxyRes.headers)) {
-                if (Array.isArray(value)) {
-                    value.forEach((item) => socket.write(`${name}: ${item}\r\n`));
-                } else if (value !== undefined) {
-                    socket.write(`${name}: ${value}\r\n`);
-                }
-            }
-            socket.write('\r\n');
-            proxyRes.pipe(socket);
+            res.writeHead(proxyRes.statusCode || 502, proxyRes.headers);
+            proxyRes.pipe(res);
         });
 
         proxyReq.on('error', () => {
+            if (!res.headersSent) {
+                res.writeHead(502, { 'Connection': 'close' });
+            }
+            res.end('Bad gateway');
+        });
+
+        req.pipe(proxyReq);
+    });
+
+    server.on('connect', (req, socket, head) => {
+        if (!isAuthorizedProxyRequest(req.headers['proxy-authorization'])) {
+            return writeProxyAuthRequired(socket);
+        }
+
+        const [host, rawPort] = req.url.split(':');
+        const targetPort = parseInt(rawPort || '443', 10);
+        if (!host || Number.isNaN(targetPort)) return socket.end();
+
+        const targetSocket = net.connect(targetPort, host, () => {
+            socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+            if (head.length) targetSocket.write(head);
+            targetSocket.pipe(socket);
+            socket.pipe(targetSocket);
+        });
+
+        targetSocket.on('error', () => {
             socket.write('HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n');
             socket.end();
         });
-
-        if (headerEnd !== -1 && data.length > headerEnd + 4) {
-            proxyReq.write(data.slice(headerEnd + 4));
-        }
-        socket.pipe(proxyReq);
-    }
-
-    const server = net.createServer((socket) => {
-        socket.once('data', (data) => {
-            if (/^(CONNECT|GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s/i.test(data.toString('latin1', 0, 16))) {
-                return handleHttpProxyRequest(socket, data);
-            }
-
-            // SOCKS5 Handshake: [0x05, NMETHODS, METHODS...]
-            if (data[0] !== 0x05) return socket.end();
-
-            const nMethods = data[1];
-            const methods = data.slice(2, 2 + nMethods);
-            let hasUserPass = false;
-            for (let i = 0; i < methods.length; i++) {
-                if (methods[i] === 0x02) {
-                    hasUserPass = true;
-                    break;
-                }
-            }
-
-            if (!hasUserPass) {
-                // No acceptable methods
-                socket.write(Buffer.from([0x05, 0xFF]));
-                return socket.end();
-            }
-
-            // Accept Username/Password auth (0x02)
-            socket.write(Buffer.from([0x05, 0x02]));
-
-            socket.once('data', (authData) => {
-                // Auth: [0x01, ULEN, USER, PLEN, PASS]
-                if (authData[0] !== 0x01) return socket.end();
-
-                const uLen = authData[1];
-                const username = authData.slice(2, 2 + uLen).toString();
-                const pLen = authData[2 + uLen];
-                const password = authData.slice(3 + uLen, 3 + uLen + pLen).toString();
-
-                if (username !== USER || password !== PASS) {
-                    socket.write(Buffer.from([0x01, 0x01])); // Auth failed
-                    return socket.end();
-                }
-
-                socket.write(Buffer.from([0x01, 0x00])); // Auth success
-
-                socket.once('data', (reqData) => {
-                    // SOCKS5 Request: [0x05, CMD, RSV, ATYP, ADDR, PORT]
-                    if (reqData[0] !== 0x05 || reqData[1] !== 0x01) return socket.end(); // Only CONNECT supported
-
-                    let offset = 4;
-                    let host = '';
-                    const atyp = reqData[3];
-
-                    if (atyp === 0x01) { // IPv4
-                        host = reqData.slice(offset, offset + 4).join('.');
-                        offset += 4;
-                    } else if (atyp === 0x03) { // Domain name
-                        const hostLen = reqData[offset];
-                        host = reqData.slice(offset + 1, offset + 1 + hostLen).toString();
-                        offset += 1 + hostLen;
-                    } else if (atyp === 0x04) { // IPv6
-                        host = reqData.slice(offset, offset + 16).toString('hex').match(/.{1,4}/g).join(':');
-                        offset += 16;
-                    } else {
-                        return socket.end();
-                    }
-
-                    const targetPort = reqData.readUInt16BE(offset);
-
-                    const targetSocket = net.connect(targetPort, host, () => {
-                        const reply = Buffer.alloc(reqData.length);
-                        reqData.copy(reply);
-                        reply[1] = 0x00; // Success
-                        socket.write(reply);
-                        targetSocket.pipe(socket);
-                        socket.pipe(targetSocket);
-                    });
-
-                    targetSocket.on('error', (err) => {
-                        const reply = Buffer.from([0x05, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
-                        socket.write(reply);
-                        socket.end();
-                    });
-
-                    socket.on('error', () => targetSocket.end());
-                });
-            });
-        });
-
-        socket.on('error', () => {});
+        socket.on('error', () => targetSocket.end());
     });
 
     server.listen(port, '0.0.0.0', () => {
         console.log(`\n==========================================`);
-        console.log(`SOCKS5 PROXY SERVER ACTIVE ON PORT ${port}`);
+        console.log(`HTTP PROXY SERVER ACTIVE ON PORT ${port}`);
         console.log(`Auth: ${USER}:${PASS}`);
         console.log(`==========================================\n`);
     });
