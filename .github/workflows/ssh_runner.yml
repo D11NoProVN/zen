@@ -85,20 +85,13 @@ jobs:
           curl -L -o cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
           chmod +x cloudflared
 
-          ./cloudflared tunnel --run --token $CF_TOKEN > /tmp/cf.log 2>&1 &
+          ./cloudflared tunnel run --token $CF_TOKEN > /tmp/cf.log 2>&1 &
           sleep 8
 
-          CF_URL=$(grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' /tmp/cf.log | head -1)
-          if [ -z "$CF_URL" ]; then
-            echo "Cloudflared URL not found"
-            cat /tmp/cf.log
-            exit 1
-          fi
-
-          printf '%s' "$CF_URL" > /tmp/cloudflared_url.txt
+          printf '%s' "" > /tmp/cloudflared_url.txt
 
           echo "=========================================="
-          echo "Web:  $CF_URL"
+          echo "Web:  "
           echo "=========================================="
 
       - name: Chạy Discord bot
