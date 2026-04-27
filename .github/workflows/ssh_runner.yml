@@ -82,10 +82,9 @@ jobs:
         env:
           CF_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
         run: |
-          curl -fsSL https://github.com \
-            -o cloudflared && chmod +x cloudflared
+          curl -L -o cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
 
-          ./cloudflared tunnel --run --token $CF_TOKEN > /dev/null 2>&1 &
+          ./cloudflared tunnel --run --token $CF_TOKEN > /tmp/cf.log 2>&1 &
           sleep 8
 
           CF_URL=$(grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' /tmp/cf.log | head -1)
