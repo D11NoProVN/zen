@@ -78,12 +78,14 @@ jobs:
           cat /tmp/datascan.log
           exit 1
 
-      - name: Cài và chạy Cloudflared (cổng 8080)
+      - name: Chạy Cloudflare Tunnel cố định
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
         run: |
-          curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
+          curl -fsSL https://github.com \
             -o cloudflared && chmod +x cloudflared
 
-          ./cloudflared tunnel --url http://localhost:8080 > /tmp/cf.log 2>&1 &
+          ./cloudflared tunnel --run --token $CF_TOKEN > /dev/null 2>&1 &
           sleep 8
 
           CF_URL=$(grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' /tmp/cf.log | head -1)
