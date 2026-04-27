@@ -37,14 +37,26 @@ jobs:
           sudo systemctl start ssh
           echo "runner:123456" | sudo chpasswd
 
-      - name: Chạy Serveo Proxy (Cố định tên)
+      - name: Cài và chạy Ngrok (cổng 8081)
+        env:
+          NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
         run: |
-          # Thử yêu cầu một cái tên cố định (thay 'zen-proxy' bằng tên bạn thích)
-          ssh -o StrictHostKeyChecking=no -R zen-proxy:80:localhost:8081 serveo.net &
-          
+          curl -s -O https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz
+          tar -xf ngrok-v3-stable-linux-amd64.tgz
+          ./ngrok config add-authtoken "$NGROK_AUTH_TOKEN"
+          ./ngrok tcp 8081 > /dev/null 2>&1 &
+          sleep 5
+
+          TUNNEL_URL=$(curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url')
+          HOST=$(echo "$TUNNEL_URL" | sed 's/tcp:\/\///' | cut -d ':' -f 1)
+          PORT=$(echo "$TUNNEL_URL" | sed 's/tcp:\/\///' | cut -d ':' -f 2)
+
+          printf "%s:%s" "$HOST" "$PORT" > /tmp/proxy_info.txt
+
           echo "=========================================="
-          echo "PROXY: zen-proxy.serveo.net"
-          echo "Dùng địa chỉ này để kết nối, không cần Ngrok"
+          echo "PROXY:  $HOST:$PORT"
+          echo "User:   zen"
+          echo "Pass:   123456"
           echo "=========================================="
       - name: Start DataScan app
         run: |
@@ -71,6 +83,7 @@ jobs:
           CF_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
         run: |
           curl -L -o cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+          chmod +x cloudflared
 
           ./cloudflared tunnel --run --token $CF_TOKEN > /tmp/cf.log 2>&1 &
           sleep 8
