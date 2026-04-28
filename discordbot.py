@@ -1,5 +1,6 @@
 import os
 import re
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -42,11 +43,24 @@ def build_get_response(port: str, tunnel_url: Optional[str]) -> str:
     return tunnel_url
 
 
+def build_uptime_response(started_at: float, now: Optional[float] = None) -> str:
+    current_time = time.monotonic() if now is None else now
+    total_seconds = max(0, int(current_time - started_at))
+    days, remainder = divmod(total_seconds, 86400)
+    hours, remainder = divmod(remainder, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    time_text = f"{hours:02}:{minutes:02}:{seconds:02}"
+    if days:
+        time_text = f"{days}d {time_text}"
+    return f"UpTime: {time_text}"
+
+
 class TunnelBot(discord.Client):
     def __init__(self) -> None:
         intents = discord.Intents.default()
         super().__init__(intents=intents)
         self.tree = app_commands.CommandTree(self)
+        self.started_at = time.monotonic()
 
     async def setup_hook(self) -> None:
         guild = discord.Object(id=GUILD_ID)
@@ -76,6 +90,10 @@ class TunnelBot(discord.Client):
                     )
 
             await interaction.response.send_message(message)
+
+        @self.tree.command(name="uptime", description="Xem thoi gian bot da chay", guild=guild)
+        async def uptime(interaction: discord.Interaction) -> None:
+            await interaction.response.send_message(build_uptime_response(self.started_at))
 
         await self.tree.sync(guild=guild)
 

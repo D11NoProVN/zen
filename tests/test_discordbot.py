@@ -1,6 +1,11 @@
 from pathlib import Path
 
-from discordbot import build_get_response, get_required_env, read_tunnel_url
+from discordbot import (
+    build_get_response,
+    build_uptime_response,
+    get_required_env,
+    read_tunnel_url,
+)
 
 
 def test_read_tunnel_url_returns_trimmed_url(tmp_path: Path):
@@ -46,6 +51,14 @@ def test_build_get_response_returns_unavailable_when_url_missing():
 
 def test_build_get_response_rejects_unsupported_port():
     assert build_get_response("3000", "https://demo.trycloudflare.com") == "Chỉ hỗ trợ port 8080"
+
+
+def test_build_uptime_response_formats_seconds():
+    assert build_uptime_response(100.0, now=165.0) == "UpTime: 00:01:05"
+
+
+def test_build_uptime_response_formats_days():
+    assert build_uptime_response(100.0, now=176565.0) == "UpTime: 2d 01:01:05"
 
 
 def test_get_required_env_reads_environment(monkeypatch):
