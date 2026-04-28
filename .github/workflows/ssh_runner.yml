@@ -1,4 +1,4 @@
-name: ZenLovv-Window
+name: ZenLovv-Windows
 on:
   push:
   workflow_dispatch:
