@@ -45,7 +45,7 @@ jobs:
           ngrok config add-authtoken "$env:NGROK_AUTH_TOKEN"
           
           # Chạy ngrok TCP cổng 3389
-          Start-Process ngrok -ArgumentList "tcp 3389" -NoNewWindow
+          Start-Process ngrok -ArgumentList "tcp 3389 --region ap" -NoNewWindow
           
           # Đợi và lấy địa chỉ
           Write-Host "Đang chờ ngrok cấp địa chỉ RDP..."
