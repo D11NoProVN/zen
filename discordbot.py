@@ -1,4 +1,5 @@
 import os
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -11,6 +12,7 @@ load_dotenv(".evn")
 GUILD_ID = 1382774908081406092
 TUNNEL_URL_FILE = Path(os.getenv("CLOUDFLARED_URL_FILE", "/tmp/cloudflared_url.txt"))
 PROXY_INFO_FILE = Path("/tmp/proxy_info.txt")
+URL_PATTERN = re.compile(r"https?://[^\s<>()]+")
 
 
 def get_required_env(name: str) -> str:
@@ -26,15 +28,18 @@ def read_tunnel_url(path: str | Path) -> Optional[str]:
         return None
 
     value = file_path.read_text(encoding="utf-8").strip()
+    matches = URL_PATTERN.findall(value)
+    if matches:
+        return matches[-1].rstrip(".,;")
     return value or None
 
 
 def build_get_response(port: str, tunnel_url: Optional[str]) -> str:
     if port != "8080":
-        return f"Chua co thong tin cho port {port}"
+        return "Chỉ hỗ trợ port 8080"
     if not tunnel_url:
-        return f"Chua co tunnel cho port {port}"
-    return f"**Web UI:** {tunnel_url}"
+        return "Chưa có tunnel cho port 8080"
+    return tunnel_url
 
 
 class TunnelBot(discord.Client):

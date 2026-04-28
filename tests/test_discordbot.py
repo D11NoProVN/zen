@@ -10,6 +10,23 @@ def test_read_tunnel_url_returns_trimmed_url(tmp_path: Path):
     assert read_tunnel_url(tunnel_file) == "https://demo.trycloudflare.com"
 
 
+def test_read_tunnel_url_extracts_latest_url_from_log_output(tmp_path: Path):
+    tunnel_file = tmp_path / "cloudflared_url.txt"
+    tunnel_file.write_text(
+        "\n".join(
+            [
+                "2026-04-28T10:00:00Z starting tunnel",
+                "https://old.trycloudflare.com",
+                "2026-04-28T10:00:02Z updated tunnel",
+                "https://fresh.trycloudflare.com",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    assert read_tunnel_url(tunnel_file) == "https://fresh.trycloudflare.com"
+
+
 def test_read_tunnel_url_returns_none_when_file_missing(tmp_path: Path):
     tunnel_file = tmp_path / "missing.txt"
 
