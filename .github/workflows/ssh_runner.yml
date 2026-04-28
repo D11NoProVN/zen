@@ -1,4 +1,4 @@
-name: ZenLovv-Windows
+name: ZenLovv-Window
 on:
   push:
   workflow_dispatch:
@@ -41,10 +41,10 @@ jobs:
           NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
         shell: pwsh
         run: |
-          curl.exe -L -o ngrok.zip https://equinox.io
-          Expand-Archive ngrok.zip -DestinationPath .
+          Invoke-WebRequest -Uri "https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-windows-amd64.zip" -OutFile ngrok.zip
+          Expand-Archive ngrok.zip -DestinationPath . -Force
           .\ngrok.exe config add-authtoken "$env:NGROK_AUTH_TOKEN"
-          Start-Process .\ngrok.exe -ArgumentList "tcp 3389" # Forward cổng RDP
+          Start-Process .\ngrok.exe -ArgumentList "tcp 3389" -NoNewWindow
           Start-Sleep -s 10
           
           # Lấy địa chỉ IP từ Ngrok API
@@ -55,7 +55,7 @@ jobs:
           Write-Host "=========================================="
           Write-Host "RDP ADDRESS: $CleanUrl"
           Write-Host "Username:    runneradmin"
-          Write-Host "Password:    123456"
+          Write-Host "Password:    Runner@123456"
           Write-Host "=========================================="
 
       - name: Giữ máy sống (6 tiếng)
