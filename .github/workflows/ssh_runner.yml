@@ -25,9 +25,9 @@ jobs:
         shell: pwsh
         run: |
           # Đặt mật khẩu cho user hiện tại (runneradmin)
-          $Password = ConvertTo-SecureString "123456" -AsPlainText -Force
+          $Password = ConvertTo-SecureString "Runner@123456" -AsPlainText -Force
           Set-LocalUser -Name "runneradmin" -Password $Password
-          Write-Host "Mật khẩu đã được thiết lập là: 123456"
+          Write-Host "Mật khẩu đã được thiết lập là: Runner@123456"
 
       - name: Kích hoạt Remote Desktop (RDP)
         shell: pwsh
