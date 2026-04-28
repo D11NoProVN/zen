@@ -16,11 +16,6 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
       - name: Thiết lập mật khẩu User
         shell: pwsh
         run: |
@@ -35,27 +30,29 @@ jobs:
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 1
 
-      - name: Cài đặt và Khởi tạo Ngrok
+      - name: Cài đặt và Chạy Ngrok (Dùng Chocolatey)
         env:
           NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
         shell: pwsh
         run: |
-          # Tải bản ngrok stable mới nhất cho Windows
-          Invoke-WebRequest -Uri "https://equinox.io" -OutFile ngrok.zip
-          Expand-Archive ngrok.zip -DestinationPath . -Force
+          # Cài đặt ngrok qua choco để tránh lỗi link tải bị 404/chặn
+          choco install ngrok -y
+          
+          # Nạp lại biến môi trường để dùng được lệnh 'ngrok' ngay lập tức
+          $env:Path += ";C:\ProgramData\chocolatey\bin"
           
           # Cấu hình Token
-          .\ngrok.exe config add-authtoken "$env:NGROK_AUTH_TOKEN"
+          ngrok config add-authtoken "$env:NGROK_AUTH_TOKEN"
           
-          # Chạy ngrok TCP cổng 3389 (RDP)
-          Start-Process .\ngrok.exe -ArgumentList "tcp 3389" -NoNewWindow
+          # Chạy ngrok TCP cổng 3389
+          Start-Process ngrok -ArgumentList "tcp 3389" -NoNewWindow
           
-          # Chờ ngrok API sẵn sàng (tối đa 30s)
-          Write-Host "Đang lấy địa chỉ RDP..."
+          # Đợi và lấy địa chỉ
+          Write-Host "Đang chờ ngrok cấp địa chỉ RDP..."
           $i = 0
           while ($i -lt 15) {
             try {
-              $Response = Invoke-RestMethod -Uri "http://localhost:4040/api/tunnels"
+              $Response = Invoke-RestMethod -Uri "http://localhost:4040/api/tunnels" -ErrorAction Stop
               $PublicUrl = $Response.tunnels[0].public_url
               if ($PublicUrl) {
                 $CleanUrl = $PublicUrl.Replace("tcp://", "")
