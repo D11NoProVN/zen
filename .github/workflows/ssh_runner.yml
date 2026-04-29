@@ -44,7 +44,7 @@ jobs:
           ngrok config add-authtoken "$env:NGROK_AUTH_TOKEN"
           
           # Chạy ngrok vùng Châu Á (ap) để kết nối nhanh từ VN
-          Start-Process ngrok -ArgumentList "tcp 3389 --region ap" -NoNewWindow
+          Start-Process ngrok -ArgumentList "tcp 3389 --region ap --log=stdout" -NoNewWindow
           
           # Chờ lấy địa chỉ
           Write-Host "Đang đợi Ngrok cấp IP..."
