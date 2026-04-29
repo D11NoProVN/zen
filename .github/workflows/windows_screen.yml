@@ -1,0 +1,242 @@
+name: Windows Screen Session
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  screen:
+    runs-on: windows-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Validate VNC password
+        shell: pwsh
+        env:
+          VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:VNC_PASSWORD)) {
+            Write-Error "Missing repository secret VNC_PASSWORD. Use 1-8 ASCII characters because classic VNC auth stores an 8-character password."
+            exit 1
+          }
+
+          if ($env:VNC_PASSWORD.Length -gt 8) {
+            Write-Error "VNC_PASSWORD must be 8 characters or fewer."
+            exit 1
+          }
+
+          if ($env:VNC_PASSWORD -notmatch '^[\x20-\x7E]+$') {
+            Write-Error "VNC_PASSWORD must contain ASCII printable characters only."
+            exit 1
+          }
+
+      - name: Optimize Windows performance
+        shell: pwsh
+        run: |
+          # Disable animations and visual effects
+          $visualSettings = "HKCU:\Control Panel\Desktop"
+          Set-ItemProperty -Path $visualSettings -Name "UserPreferencesMask" -Value ([byte[]](0x90,0x12,0x03,0x80,0x10,0x00,0x00,0x00))
+          Set-ItemProperty -Path $visualSettings -Name "VisualFXSetting" -Value 2
+          
+          # Set screen resolution to 1024x768 (standard for VNC performance)
+          Set-DisplayResolution -Width 1024 -Height 768 -Force -ErrorAction SilentlyContinue
+
+      - name: Install TightVNC
+        shell: pwsh
+        env:
+          VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $installer = Join-Path $env:RUNNER_TEMP "tightvnc-setup.msi"
+
+          Invoke-WebRequest `
+            -Uri "https://www.tightvnc.com/download/2.8.63/tightvnc-2.8.63-gpl-setup-64bit.msi" `
+            -OutFile $installer `
+            -TimeoutSec 90
+
+          $msiArgs = @(
+            "/i", "`"$installer`"",
+            "/quiet",
+            "/norestart",
+            "ADDLOCAL=`"Server`"",
+            "SERVER_REGISTER_AS_SERVICE=1",
+            "SERVER_ADD_FIREWALL_EXCEPTION=1",
+            "SET_USEVNCAUTHENTICATION=1",
+            "VALUE_OF_USEVNCAUTHENTICATION=1",
+            "SET_PASSWORD=1",
+            "VALUE_OF_PASSWORD=$env:VNC_PASSWORD",
+            "SET_ACCEPTHTTPCONNECTIONS=0",
+            "VALUE_OF_ACCEPTHTTPCONNECTIONS=0",
+            "SET_ALLOWLOOPBACK=1",
+            "VALUE_OF_ALLOWLOOPBACK=1"
+          )
+
+          $msiProcess = Start-Process msiexec.exe -ArgumentList $msiArgs -Wait -PassThru
+          if ($msiProcess.ExitCode -ne 0) {
+            Write-Error "TightVNC installer failed with exit code $($msiProcess.ExitCode)."
+            exit 1
+          }
+
+          # Performance Tweaks for TightVNC
+          $regPath = "HKLM:\SOFTWARE\TightVNC\Server"
+          New-ItemProperty -Path $regPath -Name "PollUnderCursor" -Value 1 -PropertyType DWord -Force
+          New-ItemProperty -Path $regPath -Name "PollForeground" -Value 1 -PropertyType DWord -Force
+          New-ItemProperty -Path $regPath -Name "PollFullScreen" -Value 0 -PropertyType DWord -Force
+          New-ItemProperty -Path $regPath -Name "GrabTransparent" -Value 0 -PropertyType DWord -Force
+          Set-ItemProperty -Path $regPath -Name "AllowLoopback" -Value 1 -ErrorAction SilentlyContinue
+          Set-ItemProperty -Path $regPath -Name "AcceptHttpConnections" -Value 0 -ErrorAction SilentlyContinue
+
+          Stop-Process -Name "tvnserver" -Force -ErrorAction SilentlyContinue
+          Stop-Service -Name "tvnserver" -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 3
+
+          Start-Process `
+            -FilePath "C:\Program Files\TightVNC\tvnserver.exe" `
+            -ArgumentList "-run", "-localhost", "no" `
+            -WindowStyle Hidden
+
+          netsh advfirewall firewall add rule name="Allow VNC 5900" dir=in action=allow protocol=TCP localport=5900 | Out-Null
+
+      - name: Install noVNC and websockify
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          python -m pip install --upgrade pip
+          python -m pip install --force-reinstall websockify==0.13.0
+
+          $version = "v1.6.0"
+          $zip = Join-Path $env:RUNNER_TEMP "novnc.zip"
+          Invoke-WebRequest `
+            -Uri "https://github.com/novnc/noVNC/archive/refs/tags/$version.zip" `
+            -OutFile $zip `
+            -TimeoutSec 90
+
+          Remove-Item -Recurse -Force "noVNC" -ErrorAction SilentlyContinue
+          Expand-Archive -Path $zip -DestinationPath "." -Force
+          Move-Item -Path "noVNC-1.6.0" -Destination "noVNC" -Force
+
+          if (-not (Test-Path "noVNC\vnc.html")) {
+            Write-Error "noVNC was downloaded, but vnc.html was not found."
+            exit 1
+          }
+
+      - name: Start noVNC bridge
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Start-Process `
+            -FilePath "python" `
+            -ArgumentList "-m", "websockify", "6080", "127.0.0.1:5900", "--web", "noVNC", "--verbose" `
+            -WindowStyle Hidden `
+            -RedirectStandardOutput "websockify.log" `
+            -RedirectStandardError "websockify-error.log"
+
+          netsh advfirewall firewall add rule name="Allow noVNC 6080" dir=in action=allow protocol=TCP localport=6080 | Out-Null
+
+      - name: Check local screen services
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $checks = @(
+            @{ Name = "TightVNC"; Host = "127.0.0.1"; Port = 5900 },
+            @{ Name = "noVNC"; Host = "127.0.0.1"; Port = 6080 }
+          )
+
+          foreach ($check in $checks) {
+            $ready = $false
+
+            for ($i = 1; $i -le 30; $i++) {
+              $result = Test-NetConnection -ComputerName $check.Host -Port $check.Port -WarningAction SilentlyContinue
+              if ($result.TcpTestSucceeded) {
+                Write-Host "$($check.Name) is listening on $($check.Host):$($check.Port)."
+                $ready = $true
+                break
+              }
+
+              Write-Host "Waiting for $($check.Name) on port $($check.Port) ($i/30)..."
+              Start-Sleep -Seconds 2
+            }
+
+            if (-not $ready) {
+              Get-Content "websockify.log" -ErrorAction SilentlyContinue | Write-Host
+              Get-Content "websockify-error.log" -ErrorAction SilentlyContinue | Write-Host
+              Write-Error "$($check.Name) did not become ready."
+              exit 1
+            }
+          }
+
+          Invoke-WebRequest -Uri "http://127.0.0.1:6080/vnc.html" -UseBasicParsing -TimeoutSec 10 | Out-Null
+          Write-Host "noVNC web interface is reachable locally."
+
+      - name: Start Cloudflared tunnel
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $cloudflared = Join-Path $env:RUNNER_TEMP "cloudflared.exe"
+
+          Invoke-WebRequest `
+            -Uri "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" `
+            -OutFile $cloudflared `
+            -TimeoutSec 90
+
+          Start-Process `
+            -FilePath $cloudflared `
+            -ArgumentList "tunnel", "--url", "http://127.0.0.1:6080", "--no-autoupdate", "--protocol", "http2", "--logfile", "cloudflared.log" `
+            -WindowStyle Hidden
+
+          $remoteUrl = ""
+          for ($i = 1; $i -le 60; $i++) {
+            Start-Sleep -Seconds 3
+
+            if (Test-Path "cloudflared.log") {
+              $log = Get-Content "cloudflared.log" -Raw -ErrorAction SilentlyContinue
+              if ($log -match 'https://[a-zA-Z0-9-]+\.trycloudflare\.com') {
+                $remoteUrl = "$($matches[0])/vnc.html?autoconnect=true&resize=scale&quality=5&compression=9&show_dot=true"
+                break
+              }
+            }
+
+            Write-Host "Waiting for Cloudflared public URL ($i/60)..."
+          }
+
+          if ([string]::IsNullOrWhiteSpace($remoteUrl)) {
+            Get-Content "cloudflared.log" -ErrorAction SilentlyContinue | Write-Host
+            Write-Error "Cloudflared did not return a public URL."
+            exit 1
+          }
+
+          Write-Host "=================================================="
+          Write-Host "WINDOWS SCREEN READY"
+          Write-Host "Open this URL in a browser:"
+          Write-Host $remoteUrl
+          Write-Host "Use the VNC_PASSWORD repository secret as the password."
+          Write-Host "=================================================="
+
+          $remoteUrl | Out-File -FilePath "remote-screen-url.txt" -Encoding UTF8 -NoNewline
+
+      - name: Keep screen session alive
+        shell: pwsh
+        run: |
+          $minutes = 340
+
+          for ($i = 1; $i -le $minutes; $i++) {
+            Write-Host "Windows screen session online - minute $i/$minutes - $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+            Start-Sleep -Seconds 60
+          }
+
+      - name: Auto-restart workflow
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          Write-Host "Triggering new workflow run..."
+          gh workflow run windows_screen.yml
+          Write-Host "New run triggered. This workflow will now terminate."
