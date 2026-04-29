@@ -3,10 +3,6 @@ on:
   push:
   workflow_dispatch:
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   build-vps:
     runs-on: windows-latest
@@ -16,65 +12,57 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Thiết lập mật khẩu User
+      - name: Cài đặt và Cấu hình RDP chuyên sâu
         shell: pwsh
         run: |
+          # 1. Đặt mật khẩu cho runneradmin
           $Password = ConvertTo-SecureString "Runner@123456" -AsPlainText -Force
           Set-LocalUser -Name "runneradmin" -Password $Password
-          Write-Host "Mật khẩu RDP: Runner@123456"
-
-      - name: Kích hoạt Remote Desktop (RDP)
-        shell: pwsh
-        run: |
+          
+          # 2. Thêm quyền vào nhóm Remote Desktop
+          net localgroup "Remote Desktop Users" runneradmin /add
+          
+          # 3. Kích hoạt RDP trong Registry
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
+          
+          # 4. Mở tường lửa cho RDP
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 1
+          
+          Write-Host "Cấu hình RDP hoàn tất!"
 
-      - name: Cài đặt và Chạy Ngrok (Dùng Chocolatey)
+      - name: Chạy Ngrok qua Chocolatey
         env:
           NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
         shell: pwsh
         run: |
-          # Cài đặt ngrok qua choco để tránh lỗi link tải bị 404/chặn
+          # Cài đặt ngrok
           choco install ngrok -y
-          
-          # Nạp lại biến môi trường để dùng được lệnh 'ngrok' ngay lập tức
           $env:Path += ";C:\ProgramData\chocolatey\bin"
           
-          # Cấu hình Token
+          # Cấu hình token
           ngrok config add-authtoken "$env:NGROK_AUTH_TOKEN"
           
-          # Chạy ngrok TCP cổng 3389
+          # Chạy ngrok vùng Châu Á (ap) để kết nối nhanh từ VN
           Start-Process ngrok -ArgumentList "tcp 3389 --region ap" -NoNewWindow
           
-          # Đợi và lấy địa chỉ
-          Write-Host "Đang chờ ngrok cấp địa chỉ RDP..."
-          $i = 0
-          while ($i -lt 15) {
-            try {
-              $Response = Invoke-RestMethod -Uri "http://localhost:4040/api/tunnels" -ErrorAction Stop
-              $PublicUrl = $Response.tunnels[0].public_url
-              if ($PublicUrl) {
-                $CleanUrl = $PublicUrl.Replace("tcp://", "")
-                Write-Host "=========================================="
-                Write-Host "RDP ADDRESS: $CleanUrl"
-                Write-Host "Username:    runneradmin"
-                Write-Host "Password:    Runner@123456"
-                Write-Host "=========================================="
-                break
-              }
-            } catch {
-              Start-Sleep -s 2
-              $i++
-            }
-          }
+          # Chờ lấy địa chỉ
+          Write-Host "Đang đợi Ngrok cấp IP..."
+          Start-Sleep -s 10
+          $Response = Invoke-RestMethod -Uri "http://localhost:4040/api/tunnels"
+          $PublicUrl = $Response.tunnels[0].public_url
+          $CleanUrl = $PublicUrl.Replace("tcp://", "")
+          
+          Write-Host "=========================================="
+          Write-Host "ĐỊA CHỈ RDP: $CleanUrl"
+          Write-Host "TÀI KHOẢN:   runneradmin"
+          Write-Host "MẬT KHẨU:    Runner@123456"
+          Write-Host "=========================================="
 
-      - name: Giữ máy sống (6 tiếng)
+      - name: Giữ máy chạy
         shell: pwsh
         run: |
-          $i = 0
-          while ($i -lt 360) {
-            Write-Host "Máy đang chạy... Phút thứ: $i"
+          while ($true) {
+            Write-Host "VPS đang hoạt động... (Dùng tổ hợp Ctrl+C trên máy bạn nếu muốn ngắt kết nối)"
             Start-Sleep -s 60
-            $i++
           }
